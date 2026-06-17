@@ -1,0 +1,653 @@
+#!/usr/bin/env python3
+"""
+Shared Workspace MCP Server.
+
+Tools for Cowork/Codex handover, code workspace inspection, simple pipelines,
+and token usage logging. Storage is UTF-8 JSON under:
+  ~/.claude/shared-workspace/
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import subprocess
+import sys
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+from mcp.server import Server
+from mcp.server.sse import SseServerTransport
+from mcp.types import TextContent, Tool
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+
+PORT = 8765
+HOME = Path.home().resolve()
+STORAGE_DIR = HOME / ".claude" / "shared-workspace"
+KV_FILE = STORAGE_DIR / "kv.json"
+LOG_FILE = STORAGE_DIR / "activity.json"
+FILE_EVENTS_FILE = STORAGE_DIR / "file_events.json"
+PIPELINES_FILE = STORAGE_DIR / "pipelines.json"
+TOKEN_LOG_FILE = STORAGE_DIR / "token_usage.json"
+WATCH_PATH = HOME / "Claude" / "Projects" / "Skills"
+MAX_LOG = 500
+MAX_FILE_EVENTS = 200
+MAX_TOKEN_LOG = 1000
+DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+_file_lock = threading.Lock()
+
+
+def now() -> str:
+    return datetime.now().isoformat()
+
+
+def _ensure() -> None:
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    _ensure()
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        backup = path.with_suffix(path.suffix + f".bad-{datetime.now():%Y%m%d%H%M%S}")
+        path.replace(backup)
+        logger.warning("Invalid JSON moved to %s", backup)
+        return default
+
+
+def _write_json(path: Path, data: Any) -> None:
+    _ensure()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_kv() -> dict[str, Any]:
+    return _read_json(KV_FILE, {})
+
+
+def save_kv(data: dict[str, Any]) -> None:
+    _write_json(KV_FILE, data)
+
+
+def load_log() -> list[dict[str, Any]]:
+    return _read_json(LOG_FILE, [])
+
+
+def save_log(entries: list[dict[str, Any]]) -> None:
+    _write_json(LOG_FILE, entries[-MAX_LOG:])
+
+
+def append_log(source: str, action: str, detail: str = "") -> None:
+    entries = load_log()
+    entries.append({"ts": now(), "source": source, "action": action, "detail": detail})
+    save_log(entries)
+
+
+def load_file_events() -> list[dict[str, str]]:
+    return _read_json(FILE_EVENTS_FILE, [])
+
+
+def save_file_events(events: list[dict[str, str]]) -> None:
+    _write_json(FILE_EVENTS_FILE, events[-MAX_FILE_EVENTS:])
+
+
+def append_file_event(event_type: str, path: str) -> None:
+    with _file_lock:
+        events = load_file_events()
+        events.append({"ts": now(), "type": event_type, "path": path})
+        save_file_events(events)
+
+
+def load_pipelines() -> dict[str, Any]:
+    return _read_json(PIPELINES_FILE, {})
+
+
+def save_pipelines(data: dict[str, Any]) -> None:
+    _write_json(PIPELINES_FILE, data)
+
+
+def load_token_log() -> list[dict[str, Any]]:
+    return _read_json(TOKEN_LOG_FILE, [])
+
+
+def save_token_log(entries: list[dict[str, Any]]) -> None:
+    _write_json(TOKEN_LOG_FILE, entries[-MAX_TOKEN_LOG:])
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def path_under_home(value: str | None, default: Path | None = None) -> Path:
+    raw = Path(value).expanduser() if value else (default or WATCH_PATH)
+    path = raw if raw.is_absolute() else (default or WATCH_PATH) / raw
+    resolved = path.resolve(strict=False)
+    if not _is_under(resolved, HOME):
+        raise ValueError(f"Path must stay under {HOME}")
+    return resolved
+
+
+def text_response(text: str) -> list[TextContent]:
+    return [TextContent(type="text", text=text)]
+
+
+def clipped(text: str, max_chars: int = 12000) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n\n[truncated: {len(text) - max_chars} chars omitted]"
+
+
+def run_cmd(args: list[str], cwd: Path, timeout: int = 60, max_chars: int = 12000) -> str:
+    proc = subprocess.run(
+        args,
+        cwd=str(cwd),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=timeout,
+        shell=False,
+    )
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return clipped(f"$ {' '.join(args)}\nexit={proc.returncode}\n{output}".strip(), max_chars)
+
+
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    # ponytail: rough local estimate; replace with provider usage when available.
+    words = len(re.findall(r"\S+", text))
+    chars = max(1, len(text))
+    return max(1, round(max(words * 1.35, chars / 4)))
+
+
+def make_pipeline(name: str, steps: list[str], source: str) -> dict[str, Any]:
+    return {
+        "id": re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip().lower()).strip("-") or f"pipeline-{int(datetime.now().timestamp())}",
+        "name": name,
+        "created_at": now(),
+        "updated_at": now(),
+        "by": source,
+        "status": "active",
+        "current_step": steps[0] if steps else "",
+        "steps": [{"name": s, "status": "pending", "note": "", "updated_at": ""} for s in steps],
+    }
+
+
+def update_pipeline_step(pipeline: dict[str, Any], step: str, status: str, note: str) -> dict[str, Any]:
+    found = False
+    for item in pipeline["steps"]:
+        if item["name"] == step:
+            item.update({"status": status, "note": note, "updated_at": now()})
+            found = True
+            break
+    if not found:
+        raise ValueError(f"Unknown step: {step}")
+    next_pending = next((s["name"] for s in pipeline["steps"] if s["status"] == "pending"), "")
+    pipeline["current_step"] = next_pending
+    pipeline["status"] = "done" if not next_pending else "active"
+    pipeline["updated_at"] = now()
+    return pipeline
+
+
+class _Handler(FileSystemEventHandler):
+    def _push(self, event_type: str, path: str) -> None:
+        append_file_event(event_type, path)
+
+    def on_created(self, event) -> None:
+        if not event.is_directory:
+            self._push("created", event.src_path)
+
+    def on_modified(self, event) -> None:
+        if not event.is_directory:
+            self._push("modified", event.src_path)
+
+    def on_deleted(self, event) -> None:
+        if not event.is_directory:
+            self._push("deleted", event.src_path)
+
+    def on_moved(self, event) -> None:
+        if not event.is_directory:
+            self._push("moved", f"{event.src_path} -> {event.dest_path}")
+
+
+def start_watcher() -> None:
+    if not WATCH_PATH.exists():
+        logger.warning("Watch path not found: %s; file watcher disabled", WATCH_PATH)
+        return
+    observer = Observer()
+    observer.schedule(_Handler(), str(WATCH_PATH), recursive=True)
+    observer.daemon = True
+    observer.start()
+    logger.info("Watching: %s", WATCH_PATH)
+
+
+def should_skip(path: Path) -> bool:
+    return any(part in SKIP_DIRS for part in path.parts)
+
+
+def repo_root(root_arg: str | None) -> Path:
+    root = path_under_home(root_arg, WATCH_PATH)
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"Root does not exist or is not a directory: {root}")
+    return root
+
+
+server = Server("shared-workspace")
+
+
+def tool(name: str, description: str, properties: dict[str, Any], required: list[str] | None = None) -> Tool:
+    return Tool(
+        name=name,
+        description=description,
+        inputSchema={"type": "object", "properties": properties, "required": required or []},
+    )
+
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        tool("workspace_write", "Write a value into shared workspace memory.", {
+            "key": {"type": "string"},
+            "value": {"type": "string"},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["key", "value"]),
+        tool("workspace_read", "Read a value from shared workspace memory.", {"key": {"type": "string"}}, ["key"]),
+        tool("workspace_list", "List all shared workspace keys.", {}),
+        tool("workspace_dump", "Dump all shared workspace values.", {}),
+        tool("workspace_delete", "Delete a shared workspace key.", {"key": {"type": "string"}}, ["key"]),
+        tool("log_activity", "Append an activity entry for handover.", {
+            "source": {"type": "string"},
+            "action": {"type": "string"},
+            "detail": {"type": "string", "default": ""},
+        }, ["source", "action"]),
+        tool("get_recent_activity", "Read recent activity entries.", {"n": {"type": "integer", "default": 20}}),
+        tool("get_file_events", f"Read recent persisted file events under {WATCH_PATH}.", {
+            "n": {"type": "integer", "default": 20},
+            "filter": {"type": "string", "default": ""},
+        }),
+        tool("repo_status", "Show git branch and short status for a repo under the user home.", {
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+        }),
+        tool("git_diff", "Show git diff stats and diff for a repo under the user home.", {
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+            "max_chars": {"type": "integer", "default": 12000},
+        }),
+        tool("search_code", "Search text files under a repo/root without reading everything.", {
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer", "default": 50},
+        }, ["query"]),
+        tool("read_file", "Read a bounded slice of a file under the user home.", {
+            "path": {"type": "string"},
+            "start_line": {"type": "integer", "default": 1},
+            "end_line": {"type": "integer", "default": 200},
+            "max_chars": {"type": "integer", "default": 12000},
+        }, ["path"]),
+        tool("run_check", "Run a safe preset check, not an arbitrary shell command.", {
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+            "check": {"type": "string", "description": "git_status, python_compile, python_self_check, pytest, npm_test, npm_build"},
+            "path": {"type": "string", "default": ""},
+            "timeout": {"type": "integer", "default": 60},
+            "max_chars": {"type": "integer", "default": 12000},
+        }, ["check"]),
+        tool("pipeline_create", "Create a simple task pipeline.", {
+            "name": {"type": "string"},
+            "steps": {"type": "array", "items": {"type": "string"}, "default": DEFAULT_PIPELINE_STEPS},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["name"]),
+        tool("pipeline_status", "Show one pipeline or all pipelines.", {
+            "pipeline_id": {"type": "string", "default": ""},
+        }),
+        tool("pipeline_next", "Show the current pipeline step.", {"pipeline_id": {"type": "string"}}, ["pipeline_id"]),
+        tool("pipeline_update_step", "Update one pipeline step.", {
+            "pipeline_id": {"type": "string"},
+            "step": {"type": "string"},
+            "status": {"type": "string", "description": "pending, active, done, blocked"},
+            "note": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["pipeline_id", "step", "status"]),
+        tool("pipeline_finish", "Mark a pipeline done.", {
+            "pipeline_id": {"type": "string"},
+            "note": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["pipeline_id"]),
+        tool("estimate_tokens", "Estimate token count for text locally.", {"text": {"type": "string"}}, ["text"]),
+        tool("token_log", "Log exact or estimated token usage for a task.", {
+            "task": {"type": "string"},
+            "agent": {"type": "string", "default": "unknown"},
+            "input_tokens": {"type": "integer", "default": 0},
+            "output_tokens": {"type": "integer", "default": 0},
+            "text": {"type": "string", "default": ""},
+            "files_read": {"type": "integer", "default": 0},
+            "commands_run": {"type": "integer", "default": 0},
+            "result": {"type": "string", "default": ""},
+        }, ["task"]),
+        tool("token_summary", "Summarize recent token usage.", {"n": {"type": "integer", "default": 20}}),
+        tool("context_snapshot", "Write compact handover keys and log estimated snapshot size.", {
+            "source": {"type": "string", "default": "unknown"},
+            "summary": {"type": "string"},
+            "next_steps": {"type": "string", "default": ""},
+            "blockers": {"type": "string", "default": ""},
+        }, ["summary"]),
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    try:
+        return _call_tool(name, arguments)
+    except subprocess.TimeoutExpired:
+        return text_response("Check timed out.")
+    except Exception as exc:
+        return text_response(f"Error: {exc}")
+
+
+def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    if name == "workspace_write":
+        kv = load_kv()
+        key, value, source = arguments["key"], arguments["value"], arguments.get("source", "unknown")
+        kv[key] = {"value": value, "updated_at": now(), "by": source}
+        save_kv(kv)
+        append_log(source, "write", f"{key} = {value[:80]}")
+        return text_response(f"OK: '{key}' saved.")
+
+    if name == "workspace_read":
+        kv = load_kv()
+        key = arguments["key"]
+        if key not in kv:
+            return text_response(f"Key '{key}' not found.")
+        entry = kv[key]
+        return text_response(f"{entry['value']}\n[by: {entry['by']} @ {entry['updated_at']}]")
+
+    if name == "workspace_list":
+        kv = load_kv()
+        if not kv:
+            return text_response("Workspace is empty.")
+        return text_response("\n".join(f"- {k} (by {v['by']} @ {v['updated_at']})" for k, v in kv.items()))
+
+    if name == "workspace_dump":
+        kv = load_kv()
+        if not kv:
+            return text_response("Workspace is empty.")
+        blocks = [f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items()]
+        return text_response("\n\n".join(blocks))
+
+    if name == "workspace_delete":
+        kv = load_kv()
+        key = arguments["key"]
+        if key not in kv:
+            return text_response(f"Key '{key}' not found.")
+        del kv[key]
+        save_kv(kv)
+        append_log("system", "delete", key)
+        return text_response(f"'{key}' deleted.")
+
+    if name == "log_activity":
+        append_log(arguments["source"], arguments["action"], arguments.get("detail", ""))
+        return text_response("Logged.")
+
+    if name == "get_recent_activity":
+        entries = load_log()[-int(arguments.get("n", 20)):]
+        if not entries:
+            return text_response("No activity logged yet.")
+        lines = [f"[{e['ts']}] {e['source']}: {e['action']} - {e['detail']}" for e in reversed(entries)]
+        return text_response("\n".join(lines))
+
+    if name == "get_file_events":
+        events = load_file_events()
+        filter_type = arguments.get("filter", "")
+        if filter_type:
+            events = [e for e in events if e["type"] == filter_type]
+        events = events[-int(arguments.get("n", 20)):]
+        if not events:
+            return text_response("No file events recorded yet.")
+        lines = [f"[{e['ts']}] {e['type'].upper()}: {e['path']}" for e in reversed(events)]
+        return text_response("\n".join(lines))
+
+    if name == "repo_status":
+        root = repo_root(arguments.get("root"))
+        branch = run_cmd(["git", "branch", "--show-current"], root, 10, 2000)
+        status = run_cmd(["git", "status", "--short"], root, 10, 12000)
+        return text_response(f"{branch}\n\n{status}")
+
+    if name == "git_diff":
+        root = repo_root(arguments.get("root"))
+        max_chars = int(arguments.get("max_chars", 12000))
+        stat = run_cmd(["git", "diff", "--stat"], root, 20, max_chars)
+        diff = run_cmd(["git", "diff"], root, 30, max_chars)
+        return text_response(clipped(f"{stat}\n\n{diff}", max_chars))
+
+    if name == "search_code":
+        root = repo_root(arguments.get("root"))
+        query = arguments["query"].lower()
+        max_results = int(arguments.get("max_results", 50))
+        results: list[str] = []
+        for path in root.rglob("*"):
+            if len(results) >= max_results:
+                break
+            if should_skip(path) or not path.is_file():
+                continue
+            try:
+                for idx, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                    if query in line.lower():
+                        rel = path.relative_to(root)
+                        results.append(f"{rel}:{idx}: {line.strip()[:240]}")
+                        break
+            except OSError:
+                continue
+        return text_response("\n".join(results) if results else "No matches.")
+
+    if name == "read_file":
+        path = path_under_home(arguments["path"])
+        if not path.exists() or not path.is_file():
+            return text_response(f"File not found: {path}")
+        start = max(1, int(arguments.get("start_line", 1)))
+        end = max(start, int(arguments.get("end_line", 200)))
+        max_chars = int(arguments.get("max_chars", 12000))
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        selected = [f"{i}: {line}" for i, line in enumerate(lines[start - 1:end], start)]
+        return text_response(clipped("\n".join(selected), max_chars))
+
+    if name == "run_check":
+        root = repo_root(arguments.get("root"))
+        check = arguments["check"]
+        timeout = int(arguments.get("timeout", 60))
+        max_chars = int(arguments.get("max_chars", 12000))
+        extra_path = arguments.get("path", "")
+        if check == "git_status":
+            return text_response(run_cmd(["git", "status", "--short"], root, timeout, max_chars))
+        if check == "python_compile":
+            target = path_under_home(extra_path, root) if extra_path else root
+            files = [target] if target.is_file() else [p for p in target.rglob("*.py") if not should_skip(p)]
+            if not files:
+                return text_response("No Python files found.")
+            return text_response(run_cmd([sys.executable, "-m", "py_compile", *map(str, files)], root, timeout, max_chars))
+        if check == "python_self_check":
+            target = path_under_home(extra_path, root) if extra_path else root / "server.py"
+            return text_response(run_cmd([sys.executable, str(target), "--self-check"], root, timeout, max_chars))
+        if check == "pytest":
+            return text_response(run_cmd([sys.executable, "-m", "pytest"], root, timeout, max_chars))
+        if check == "npm_test":
+            return text_response(run_cmd(["npm", "test"], root, timeout, max_chars))
+        if check == "npm_build":
+            return text_response(run_cmd(["npm", "run", "build"], root, timeout, max_chars))
+        return text_response(f"Unknown check: {check}")
+
+    if name == "pipeline_create":
+        data = load_pipelines()
+        steps = arguments.get("steps") or DEFAULT_PIPELINE_STEPS
+        pipeline = make_pipeline(arguments["name"], steps, arguments.get("source", "unknown"))
+        base_id = pipeline["id"]
+        suffix = 2
+        while pipeline["id"] in data:
+            pipeline["id"] = f"{base_id}-{suffix}"
+            suffix += 1
+        data[pipeline["id"]] = pipeline
+        save_pipelines(data)
+        append_log(arguments.get("source", "unknown"), "pipeline_create", pipeline["id"])
+        return text_response(json.dumps(pipeline, indent=2, ensure_ascii=False))
+
+    if name == "pipeline_status":
+        data = load_pipelines()
+        pipeline_id = arguments.get("pipeline_id", "")
+        if pipeline_id:
+            return text_response(json.dumps(data.get(pipeline_id, {"error": "not found"}), indent=2, ensure_ascii=False))
+        return text_response(json.dumps(data, indent=2, ensure_ascii=False) if data else "No pipelines.")
+
+    if name == "pipeline_next":
+        data = load_pipelines()
+        pipeline = data.get(arguments["pipeline_id"])
+        if not pipeline:
+            return text_response("Pipeline not found.")
+        return text_response(pipeline.get("current_step") or "No pending step.")
+
+    if name == "pipeline_update_step":
+        data = load_pipelines()
+        pipeline_id = arguments["pipeline_id"]
+        if pipeline_id not in data:
+            return text_response("Pipeline not found.")
+        data[pipeline_id] = update_pipeline_step(data[pipeline_id], arguments["step"], arguments["status"], arguments.get("note", ""))
+        save_pipelines(data)
+        append_log(arguments.get("source", "unknown"), "pipeline_update", f"{pipeline_id}:{arguments['step']}={arguments['status']}")
+        return text_response(json.dumps(data[pipeline_id], indent=2, ensure_ascii=False))
+
+    if name == "pipeline_finish":
+        data = load_pipelines()
+        pipeline_id = arguments["pipeline_id"]
+        if pipeline_id not in data:
+            return text_response("Pipeline not found.")
+        pipeline = data[pipeline_id]
+        for step in pipeline["steps"]:
+            if step["status"] == "pending":
+                step.update({"status": "done", "note": arguments.get("note", ""), "updated_at": now()})
+        pipeline.update({"status": "done", "current_step": "", "updated_at": now()})
+        save_pipelines(data)
+        append_log(arguments.get("source", "unknown"), "pipeline_finish", pipeline_id)
+        return text_response(json.dumps(pipeline, indent=2, ensure_ascii=False))
+
+    if name == "estimate_tokens":
+        return text_response(str(estimate_tokens(arguments["text"])))
+
+    if name == "token_log":
+        entries = load_token_log()
+        text = arguments.get("text", "")
+        input_tokens = int(arguments.get("input_tokens", 0))
+        output_tokens = int(arguments.get("output_tokens", 0))
+        estimated = False
+        if not input_tokens and text:
+            input_tokens = estimate_tokens(text)
+            estimated = True
+        entry = {
+            "ts": now(),
+            "task": arguments["task"],
+            "agent": arguments.get("agent", "unknown"),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "estimated": estimated,
+            "files_read": int(arguments.get("files_read", 0)),
+            "commands_run": int(arguments.get("commands_run", 0)),
+            "result": arguments.get("result", ""),
+        }
+        entries.append(entry)
+        save_token_log(entries)
+        return text_response(json.dumps(entry, indent=2, ensure_ascii=False))
+
+    if name == "token_summary":
+        entries = load_token_log()[-int(arguments.get("n", 20)):]
+        if not entries:
+            return text_response("No token usage logged.")
+        total = sum(int(e.get("total_tokens", 0)) for e in entries)
+        lines = [f"entries={len(entries)} total_tokens={total}"]
+        lines += [f"- {e['ts']} {e['agent']} {e['task']}: {e['total_tokens']} tokens" for e in reversed(entries)]
+        return text_response("\n".join(lines))
+
+    if name == "context_snapshot":
+        source = arguments.get("source", "unknown")
+        kv = load_kv()
+        kv["context"] = {"value": arguments["summary"], "updated_at": now(), "by": source}
+        if arguments.get("next_steps"):
+            kv["next_steps"] = {"value": arguments["next_steps"], "updated_at": now(), "by": source}
+        if arguments.get("blockers"):
+            kv["blockers"] = {"value": arguments["blockers"], "updated_at": now(), "by": source}
+        save_kv(kv)
+        snapshot_text = "\n".join(v for v in [arguments["summary"], arguments.get("next_steps", ""), arguments.get("blockers", "")] if v)
+        entries = load_token_log()
+        entries.append({
+            "ts": now(),
+            "task": "context_snapshot",
+            "agent": source,
+            "input_tokens": estimate_tokens(snapshot_text),
+            "output_tokens": 0,
+            "total_tokens": estimate_tokens(snapshot_text),
+            "estimated": True,
+            "files_read": 0,
+            "commands_run": 0,
+            "result": "snapshot",
+        })
+        save_token_log(entries)
+        append_log(source, "context_snapshot", f"{estimate_tokens(snapshot_text)} estimated tokens")
+        return text_response(f"Snapshot saved. Estimated tokens: {estimate_tokens(snapshot_text)}")
+
+    return text_response(f"Unknown tool: {name}")
+
+
+def run_self_check() -> None:
+    assert estimate_tokens("one two three") >= 4
+    pipeline = make_pipeline("Demo Pipeline", ["plan", "test"], "self")
+    pipeline = update_pipeline_step(pipeline, "plan", "done", "ok")
+    assert pipeline["current_step"] == "test"
+    assert _is_under(HOME, HOME)
+    try:
+        path_under_home(str(HOME.parent.parent if HOME.parent != HOME else Path("C:/")))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("path guard failed")
+    print("self-check OK")
+
+
+sse = SseServerTransport("/messages/")
+
+
+async def handle_sse(request):
+    async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+        await server.run(streams[0], streams[1], server.create_initialization_options())
+
+
+app = Starlette(routes=[
+    Route("/sse", endpoint=handle_sse),
+    Mount("/messages/", app=sse.handle_post_message),
+])
+
+
+if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        run_self_check()
+        raise SystemExit(0)
+    start_watcher()
+    logger.info("Shared Workspace MCP -> http://localhost:%s/sse", PORT)
+    logger.info("Storage: %s", STORAGE_DIR)
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
