@@ -44,14 +44,46 @@ TOKEN_LOG_FILE = STORAGE_DIR / "token_usage.json"
 LEARNING_FILE = STORAGE_DIR / "learning.json"
 GOALS_FILE = STORAGE_DIR / "goals.json"
 FEEDBACK_FILE = STORAGE_DIR / "feedback.json"
+CHECK_RUNS_FILE = STORAGE_DIR / "check_runs.json"
+GATE_RESULTS_FILE = STORAGE_DIR / "gate_results.json"
+EVIDENCE_FILE = STORAGE_DIR / "evidence.json"
 WATCH_PATH = HOME / "Claude" / "Projects" / "Skills"
 MAX_LOG = 500
 MAX_FILE_EVENTS = 200
 MAX_TOKEN_LOG = 1000
 MAX_LEARNING = 1000
 MAX_FEEDBACK = 1000
+MAX_CHECK_RUNS = 1000
+MAX_GATE_RESULTS = 1000
+MAX_EVIDENCE = 1000
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
+GATE_POLICY = {
+    "intake": [
+        "session_owner exists",
+        "active_task exists and is not '-'",
+        "recent task_start or session_start activity exists",
+    ],
+    "plan": [
+        "current_plan exists",
+        "at least one goal exists",
+    ],
+    "implement": [
+        "repo_status can run",
+        "there is a relevant file event or git diff",
+    ],
+    "test": [
+        "recent successful check exists",
+    ],
+    "review": [
+        "recent file:line evidence verification passed",
+    ],
+    "handover": [
+        "last_output exists",
+        "next_steps exists",
+        "recent token_log exists",
+    ],
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -166,6 +198,30 @@ def save_feedback(entries: list[dict[str, Any]]) -> None:
     _write_json(FEEDBACK_FILE, entries[-MAX_FEEDBACK:])
 
 
+def load_check_runs() -> list[dict[str, Any]]:
+    return _read_json(CHECK_RUNS_FILE, [])
+
+
+def save_check_runs(entries: list[dict[str, Any]]) -> None:
+    _write_json(CHECK_RUNS_FILE, entries[-MAX_CHECK_RUNS:])
+
+
+def load_gate_results() -> list[dict[str, Any]]:
+    return _read_json(GATE_RESULTS_FILE, [])
+
+
+def save_gate_results(entries: list[dict[str, Any]]) -> None:
+    _write_json(GATE_RESULTS_FILE, entries[-MAX_GATE_RESULTS:])
+
+
+def load_evidence() -> list[dict[str, Any]]:
+    return _read_json(EVIDENCE_FILE, [])
+
+
+def save_evidence(entries: list[dict[str, Any]]) -> None:
+    _write_json(EVIDENCE_FILE, entries[-MAX_EVIDENCE:])
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -194,6 +250,11 @@ def clipped(text: str, max_chars: int = 12000) -> str:
 
 
 def run_cmd(args: list[str], cwd: Path, timeout: int = 60, max_chars: int = 12000) -> str:
+    result = run_cmd_result(args, cwd, timeout, max_chars)
+    return result["text"]
+
+
+def run_cmd_result(args: list[str], cwd: Path, timeout: int = 60, max_chars: int = 12000) -> dict[str, Any]:
     proc = subprocess.run(
         args,
         cwd=str(cwd),
@@ -205,7 +266,23 @@ def run_cmd(args: list[str], cwd: Path, timeout: int = 60, max_chars: int = 1200
         shell=False,
     )
     output = (proc.stdout or "") + (proc.stderr or "")
-    return clipped(f"$ {' '.join(args)}\nexit={proc.returncode}\n{output}".strip(), max_chars)
+    text = clipped(f"$ {' '.join(args)}\nexit={proc.returncode}\n{output}".strip(), max_chars)
+    return {"args": args, "cwd": str(cwd), "exit_code": proc.returncode, "output": output, "text": text, "ts": now()}
+
+
+def append_check_run(check: str, root: Path, result: dict[str, Any]) -> dict[str, Any]:
+    entries = load_check_runs()
+    entry = {
+        "ts": result["ts"],
+        "check": check,
+        "root": str(root),
+        "exit_code": result["exit_code"],
+        "passed": result["exit_code"] == 0,
+        "command": result["args"],
+    }
+    entries.append(entry)
+    save_check_runs(entries)
+    return entry
 
 
 def estimate_tokens(text: str) -> int:
@@ -294,6 +371,135 @@ def record_feedback(prompt_id: str, rating: str, note: str = "", source: str = "
 def feedback_url(prompt_id: str, rating: str = "") -> str:
     base = f"http://localhost:{PORT}/feedback?id={quote(prompt_id)}"
     return f"{base}&rating={quote(rating)}" if rating else base
+
+
+COORD_RE = re.compile(
+    r"(?<![\w:/.-])(?P<file>(?:[A-Za-z]:[\\/])?(?:[\w.-]+[\\/])*[\w.-]+\.[A-Za-z0-9_+-]+):(?P<start>\d+)(?:-(?P<end>\d+))?"
+)
+
+
+def parse_file_refs(text: str) -> list[dict[str, Any]]:
+    refs = []
+    for match in COORD_RE.finditer(text):
+        start = int(match.group("start"))
+        end = int(match.group("end") or start)
+        refs.append({"raw": match.group(0), "file": match.group("file"), "start": start, "end": end})
+    return refs
+
+
+def verify_refs(text: str, root: Path, snippet: str = "") -> dict[str, Any]:
+    refs = parse_file_refs(text)
+    results = []
+    for ref in refs:
+        file_path = Path(ref["file"])
+        path = file_path.resolve(strict=False) if file_path.is_absolute() else (root / file_path).resolve(strict=False)
+        item = {**ref, "path": str(path), "exists": path.exists(), "line_range_ok": False, "snippet_ok": not snippet}
+        if item["exists"] and path.is_file() and _is_under(path, HOME):
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            item["line_count"] = len(lines)
+            item["line_range_ok"] = 1 <= ref["start"] <= ref["end"] <= len(lines)
+            if snippet and item["line_range_ok"]:
+                selected = "\n".join(lines[ref["start"] - 1:ref["end"]])
+                item["snippet_ok"] = snippet in selected
+        results.append(item)
+    passed = bool(results) and all(r["exists"] and r["line_range_ok"] and r["snippet_ok"] for r in results)
+    return {"ts": now(), "type": "file_refs", "root": str(root), "passed": passed, "refs": results}
+
+
+def append_evidence(entry: dict[str, Any]) -> dict[str, Any]:
+    entries = load_evidence()
+    entries.append(entry)
+    save_evidence(entries)
+    return entry
+
+
+def append_gate_result(entry: dict[str, Any]) -> dict[str, Any]:
+    entries = load_gate_results()
+    entries.append(entry)
+    save_gate_results(entries)
+    return entry
+
+
+def recent_activity_actions(limit: int = 50) -> set[str]:
+    return {entry.get("action", "") for entry in load_log()[-limit:]}
+
+
+def recent_successful_check(root: Path) -> dict[str, Any] | None:
+    root_text = str(root)
+    for entry in reversed(load_check_runs()):
+        if entry.get("root") == root_text and entry.get("passed"):
+            return entry
+    return None
+
+
+def recent_verified_evidence(root: Path) -> dict[str, Any] | None:
+    root_text = str(root)
+    for entry in reversed(load_evidence()):
+        if entry.get("type") == "file_refs" and entry.get("root") == root_text and entry.get("passed"):
+            return entry
+    return None
+
+
+def git_dirty(root: Path) -> bool:
+    try:
+        result = run_cmd_result(["git", "status", "--short"], root, 10, 12000)
+    except Exception:
+        return False
+    return result["exit_code"] == 0 and bool(result["output"].strip())
+
+
+def relevant_file_event(root: Path) -> bool:
+    root_text = str(root)
+    return any(event.get("path", "").startswith(root_text) for event in load_file_events()[-50:])
+
+
+def gate_checks(step: str, root: Path) -> list[dict[str, Any]]:
+    kv = load_kv()
+    actions = recent_activity_actions()
+    checks: list[dict[str, Any]] = []
+    add = checks.append
+    if step == "intake":
+        add({"name": "session_owner", "passed": bool(kv.get("session_owner")), "detail": "session_owner exists"})
+        active = kv.get("active_task", {}).get("value", "")
+        add({"name": "active_task", "passed": bool(active and active != "-"), "detail": "active_task exists and is not '-'"})
+        add({"name": "session_activity", "passed": bool(actions & {"task_start", "session_start"}), "detail": "task_start/session_start activity exists"})
+    elif step == "plan":
+        plan = kv.get("current_plan", {}).get("value", "")
+        add({"name": "current_plan", "passed": len(plan.strip()) >= 20, "detail": "current_plan has content"})
+        add({"name": "goal", "passed": bool(load_goals()), "detail": "at least one goal exists"})
+    elif step == "implement":
+        status = run_cmd_result(["git", "status", "--short"], root, 10, 12000)
+        append_check_run("git_status", root, status)
+        add({"name": "repo_status", "passed": status["exit_code"] == 0, "detail": "git status can run"})
+        add({"name": "scope_evidence", "passed": bool(status["output"].strip()) or relevant_file_event(root), "detail": "git diff/status or file event exists"})
+    elif step == "test":
+        check = recent_successful_check(root)
+        add({"name": "successful_check", "passed": bool(check), "detail": f"recent successful check: {check.get('check') if check else 'none'}"})
+    elif step == "review":
+        evidence = recent_verified_evidence(root)
+        add({"name": "file_line_evidence", "passed": bool(evidence), "detail": "recent verify_file_refs passed"})
+    elif step == "handover":
+        add({"name": "last_output", "passed": bool(kv.get("last_output", {}).get("value")), "detail": "last_output exists"})
+        add({"name": "next_steps", "passed": bool(kv.get("next_steps", {}).get("value")), "detail": "next_steps exists"})
+        add({"name": "token_log", "passed": bool(load_token_log()), "detail": "token_log has entries"})
+    else:
+        raise ValueError(f"Unknown gate step: {step}")
+    return checks
+
+
+def evaluate_gate(step: str, root: Path, pipeline_id: str = "") -> dict[str, Any]:
+    checks = gate_checks(step, root)
+    result = {
+        "ts": now(),
+        "pipeline_id": pipeline_id,
+        "step": step,
+        "root": str(root),
+        "passed": all(item["passed"] for item in checks),
+        "checks": checks,
+        "policy": GATE_POLICY.get(step, []),
+    }
+    append_gate_result(result)
+    return result
 
 
 class _Handler(FileSystemEventHandler):
@@ -495,6 +701,37 @@ async def list_tools() -> list[Tool]:
             "note": {"type": "string", "default": ""},
         }, ["rating"]),
         tool("feedback_summary", "Summarize recent feedback.", {"n": {"type": "integer", "default": 20}}),
+        tool("verify_file_refs", "Verify file:line coordinates exist; does not judge interpretation.", {
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+            "text": {"type": "string"},
+            "snippet": {"type": "string", "default": ""},
+        }, ["text"]),
+        tool("check_run_history", "Show recent safe check results.", {
+            "root": {"type": "string", "default": ""},
+            "n": {"type": "integer", "default": 20},
+        }),
+        tool("gate_policy", "Show hardcoded pipeline gate policy.", {
+            "step": {"type": "string", "default": ""},
+        }),
+        tool("gate_check", "Evaluate hard gates for one pipeline step.", {
+            "step": {"type": "string"},
+            "pipeline_id": {"type": "string", "default": ""},
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+        }, ["step"]),
+        tool("gate_status", "Show recent gate results.", {
+            "pipeline_id": {"type": "string", "default": ""},
+            "n": {"type": "integer", "default": 20},
+        }),
+        tool("gate_advance", "Mark a pipeline step done only if its hard gate passes.", {
+            "pipeline_id": {"type": "string"},
+            "step": {"type": "string", "default": ""},
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["pipeline_id"]),
+        tool("drift_report", "Summarize goal, plan, checks, evidence, handover, feedback, and gates.", {
+            "pipeline_id": {"type": "string", "default": ""},
+            "root": {"type": "string", "default": str(WATCH_PATH)},
+        }),
     ]
 
 
@@ -620,23 +857,27 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         timeout = int(arguments.get("timeout", 60))
         max_chars = int(arguments.get("max_chars", 12000))
         extra_path = arguments.get("path", "")
+        def checked(args: list[str]) -> list[TextContent]:
+            result = run_cmd_result(args, root, timeout, max_chars)
+            append_check_run(check, root, result)
+            return text_response(result["text"])
         if check == "git_status":
-            return text_response(run_cmd(["git", "status", "--short"], root, timeout, max_chars))
+            return checked(["git", "status", "--short"])
         if check == "python_compile":
             target = path_under_home(extra_path, root) if extra_path else root
             files = [target] if target.is_file() else [p for p in target.rglob("*.py") if not should_skip(p)]
             if not files:
                 return text_response("No Python files found.")
-            return text_response(run_cmd([sys.executable, "-m", "py_compile", *map(str, files)], root, timeout, max_chars))
+            return checked([sys.executable, "-m", "py_compile", *map(str, files)])
         if check == "python_self_check":
             target = path_under_home(extra_path, root) if extra_path else root / "server.py"
-            return text_response(run_cmd([sys.executable, str(target), "--self-check"], root, timeout, max_chars))
+            return checked([sys.executable, str(target), "--self-check"])
         if check == "pytest":
-            return text_response(run_cmd([sys.executable, "-m", "pytest"], root, timeout, max_chars))
+            return checked([sys.executable, "-m", "pytest"])
         if check == "npm_test":
-            return text_response(run_cmd(["npm", "test"], root, timeout, max_chars))
+            return checked(["npm", "test"])
         if check == "npm_build":
-            return text_response(run_cmd(["npm", "run", "build"], root, timeout, max_chars))
+            return checked(["npm", "run", "build"])
         return text_response(f"Unknown check: {check}")
 
     if name == "pipeline_create":
@@ -926,6 +1167,103 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         ]
         return text_response("\n".join(lines))
 
+    if name == "verify_file_refs":
+        root = repo_root(arguments.get("root"))
+        result = verify_refs(arguments["text"], root, arguments.get("snippet", ""))
+        append_evidence(result)
+        append_log("system", "verify_file_refs", f"passed={result['passed']} refs={len(result['refs'])}")
+        return text_response(json.dumps(result, indent=2, ensure_ascii=False))
+
+    if name == "check_run_history":
+        root_arg = arguments.get("root", "")
+        entries = load_check_runs()
+        if root_arg:
+            root = repo_root(root_arg)
+            entries = [e for e in entries if e.get("root") == str(root)]
+        entries = entries[-int(arguments.get("n", 20)):]
+        if not entries:
+            return text_response("No check runs recorded.")
+        lines = [
+            f"[{e['ts']}] {e['check']} passed={e['passed']} exit={e['exit_code']} root={e['root']}"
+            for e in reversed(entries)
+        ]
+        return text_response("\n".join(lines))
+
+    if name == "gate_policy":
+        step = arguments.get("step", "")
+        if step:
+            return text_response(json.dumps({step: GATE_POLICY.get(step, [])}, indent=2, ensure_ascii=False))
+        return text_response(json.dumps(GATE_POLICY, indent=2, ensure_ascii=False))
+
+    if name == "gate_check":
+        root = repo_root(arguments.get("root"))
+        result = evaluate_gate(arguments["step"], root, arguments.get("pipeline_id", ""))
+        if not result["passed"]:
+            append_log("system", "blocked", f"gate {arguments['step']} failed")
+        return text_response(json.dumps(result, indent=2, ensure_ascii=False))
+
+    if name == "gate_status":
+        entries = load_gate_results()
+        pipeline_id = arguments.get("pipeline_id", "")
+        if pipeline_id:
+            entries = [e for e in entries if e.get("pipeline_id") == pipeline_id]
+        entries = entries[-int(arguments.get("n", 20)):]
+        if not entries:
+            return text_response("No gate results recorded.")
+        lines = [
+            f"[{e['ts']}] {e.get('pipeline_id', '')}:{e['step']} passed={e['passed']}"
+            for e in reversed(entries)
+        ]
+        return text_response("\n".join(lines))
+
+    if name == "gate_advance":
+        root = repo_root(arguments.get("root"))
+        data = load_pipelines()
+        pipeline_id = arguments["pipeline_id"]
+        if pipeline_id not in data:
+            return text_response("Pipeline not found.")
+        pipeline = data[pipeline_id]
+        step = arguments.get("step") or pipeline.get("current_step", "")
+        if not step:
+            return text_response("No pending step.")
+        result = evaluate_gate(step, root, pipeline_id)
+        if not result["passed"]:
+            append_log(arguments.get("source", "unknown"), "blocked", f"gate_advance blocked {pipeline_id}:{step}")
+            return text_response(json.dumps({"advanced": False, "gate": result}, indent=2, ensure_ascii=False))
+        data[pipeline_id] = update_pipeline_step(pipeline, step, "done", "gate passed")
+        save_pipelines(data)
+        append_log(arguments.get("source", "unknown"), "gate_advance", f"{pipeline_id}:{step}=done")
+        return text_response(json.dumps({"advanced": True, "gate": result, "pipeline": data[pipeline_id]}, indent=2, ensure_ascii=False))
+
+    if name == "drift_report":
+        root = repo_root(arguments.get("root"))
+        kv = load_kv()
+        pipeline_id = arguments.get("pipeline_id", "")
+        pipelines = load_pipelines()
+        pipeline = pipelines.get(pipeline_id) if pipeline_id else None
+        latest_gate = next((e for e in reversed(load_gate_results()) if not pipeline_id or e.get("pipeline_id") == pipeline_id), None)
+        latest_check = recent_successful_check(root)
+        latest_evidence = recent_verified_evidence(root)
+        recent_feedback = next((e for e in reversed(load_feedback()) if e.get("rating")), None)
+        report = {
+            "ts": now(),
+            "root": str(root),
+            "pipeline": {
+                "id": pipeline_id,
+                "status": pipeline.get("status") if pipeline else "",
+                "current_step": pipeline.get("current_step") if pipeline else "",
+            },
+            "goal_count": len(load_goals()),
+            "has_plan": bool(kv.get("current_plan", {}).get("value")),
+            "has_active_task": bool(kv.get("active_task", {}).get("value") and kv.get("active_task", {}).get("value") != "-"),
+            "latest_successful_check": latest_check,
+            "latest_verified_evidence": bool(latest_evidence),
+            "latest_gate": latest_gate,
+            "handover_ready": bool(kv.get("last_output", {}).get("value") and kv.get("next_steps", {}).get("value")),
+            "recent_feedback": recent_feedback,
+        }
+        return text_response(json.dumps(report, indent=2, ensure_ascii=False))
+
     return text_response(f"Unknown tool: {name}")
 
 
@@ -934,6 +1272,9 @@ def run_self_check() -> None:
     pipeline = make_pipeline("Demo Pipeline", ["plan", "test"], "self")
     pipeline = update_pipeline_step(pipeline, "plan", "done", "ok")
     assert pipeline["current_step"] == "test"
+    assert "review" in GATE_POLICY
+    refs = verify_refs("server.py:1-5", Path(__file__).resolve().parent)
+    assert refs["passed"]
     goal = make_goal("Reach the target", "self", "done means done")
     assert goal["status"] == "active"
     lesson = {"type": "lesson", "source": "self", "lesson": "Keep checks close to behavior."}
