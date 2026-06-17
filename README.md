@@ -121,7 +121,7 @@ read_file
 run_check
 ```
 
-`run_check` supports fixed presets only:
+`run_check` supports fixed presets only (`ruff`/`mypy` run only if installed):
 
 ```text
 git_status
@@ -130,6 +130,8 @@ python_self_check
 pytest
 npm_test
 npm_build
+ruff
+mypy
 ```
 
 ## Semi-auto handover

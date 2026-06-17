@@ -18,6 +18,20 @@ has an obvious default, take it and say so in one line — don't block on it.
 | Reading, searching, running checks and gates | Security-relevant change (auth, network exposure, secrets) |
 | Commit to a branch, open a PR, update required docs | Acceptance criteria genuinely ambiguous and undefaultable |
 
+### Autonomy levels
+How much the agent does unattended. The gates enforce it; this just names the
+setting. Default: **L2**.
+
+| Level | The agent may, unattended | Stops for sign-off at |
+|---|---|---|
+| **L0** suggest | Read, search, propose — change nothing | any write |
+| **L1** branch | Edit, run checks/gates, commit to a branch, open a PR | merge / push to main |
+| **L2** ship | L1 + merge/push to `main` once all hard gates pass | the "ask first" rows below |
+| **L3** unattended | L2 + act on schedules (dependency triage, nightly drift) without a prompt | same |
+
+No level ever skips the "Ask first" column (new dep, schema/contract break,
+delete, deploy, security/network). Those always need a human.
+
 ### Workflow: gated by default
 Run real work through the pipeline gates instead of self-declaring done:
 
@@ -55,5 +69,5 @@ handover conventions:
 5. Run `python scripts/check_secrets.py` before every push.
 6. Conventional commits (`feat:`, `fix:`, `docs:`, …).
 
-Note: pushing straight to `main` is currently the agent's call. That is the main
-autonomy dial — switch it to PR-only sign-off here if you want tighter control.
+Autonomy level here is **L2** (agent may push to `main` on green gates). Drop to
+**L1** for PR-only sign-off, or raise to **L3** for unattended scheduled runs.

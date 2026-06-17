@@ -53,6 +53,10 @@ def main() -> int:
     bad_refs = module.verify_refs("server.py:999999", ROOT)
     assert not bad_refs["passed"], bad_refs
 
+    # run_check ruff preset dispatches and degrades gracefully (no crash) when absent
+    ruff_out = module._call_tool("run_check", {"check": "ruff", "root": str(ROOT)})[0].text
+    assert isinstance(ruff_out, str) and ruff_out, ruff_out
+
     store = {
         "kv": {},
         "log": [],
