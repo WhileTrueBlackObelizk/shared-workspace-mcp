@@ -1607,12 +1607,48 @@ async def handle_health(request):
     )
 
 
+def local_request_ok(host: str, origin: str) -> bool:
+    """Reject non-local Host (DNS rebinding) and any browser Origin that is not
+    localhost (CSRF). MCP clients and curl send no Origin -> allowed."""
+    host = (host or "").lower().strip()
+    origin = (origin or "").lower().strip()
+    if host.startswith("["):                       # [::1] or [::1]:port
+        hostname = host.split("]")[0] + "]"
+    else:
+        hostname = host.rsplit(":", 1)[0] if ":" in host else host
+    host_ok = hostname in {"127.0.0.1", "localhost", "[::1]"}
+    origin_ok = origin == "" or origin.startswith((
+        "http://127.0.0.1", "https://127.0.0.1",
+        "http://localhost", "https://localhost",
+        "http://[::1]", "https://[::1]",
+    ))
+    return host_ok and origin_ok
+
+
+class LocalGuardMiddleware:
+    """Blocks DNS-rebinding / cross-origin browser access to the local server."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http":
+            headers = dict(scope.get("headers") or [])
+            host = headers.get(b"host", b"").decode("latin-1")
+            origin = headers.get(b"origin", b"").decode("latin-1")
+            if not local_request_ok(host, origin):
+                await JSONResponse({"error": "forbidden: non-local host or origin"}, status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 app = Starlette(routes=[
     Route("/sse", endpoint=handle_sse),
     Route("/health", endpoint=handle_health),
     Route("/feedback", endpoint=handle_feedback, methods=["GET", "POST"]),
     Mount("/messages/", app=sse.handle_post_message),
 ])
+app.add_middleware(LocalGuardMiddleware)
 
 
 if __name__ == "__main__":

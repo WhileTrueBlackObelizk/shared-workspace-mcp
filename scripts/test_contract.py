@@ -57,6 +57,15 @@ def main() -> int:
     ruff_out = module._call_tool("run_check", {"check": "ruff", "root": str(ROOT)})[0].text
     assert isinstance(ruff_out, str) and ruff_out, ruff_out
 
+    # local guard: DNS-rebinding / cross-origin browser access is blocked
+    assert module.local_request_ok("127.0.0.1:8765", "")
+    assert module.local_request_ok("localhost:8765", "")
+    assert module.local_request_ok("[::1]:8765", "")
+    assert module.local_request_ok("127.0.0.1:8765", "http://localhost:3000")
+    assert not module.local_request_ok("evil.com", "")                       # rebound foreign Host
+    assert not module.local_request_ok("127.0.0.1:8765", "http://evil.com")  # cross-origin browser
+    assert not module.local_request_ok("attacker.com:8765", "http://attacker.com")
+
     store = {
         "kv": {},
         "log": [],
