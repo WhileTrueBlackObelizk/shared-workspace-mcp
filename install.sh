@@ -24,6 +24,11 @@ chmod +x "${install_dir}/.githooks/pre-commit" 2>/dev/null || true
 "${install_dir}/start.sh" --setup-only
 git -C "${install_dir}" config core.hooksPath .githooks
 
+if command -v claude >/dev/null; then
+  claude mcp remove shared-workspace -s user >/dev/null 2>&1 || true
+  claude mcp add --scope user shared-workspace -- "${install_dir}/.venv/bin/python" "${install_dir}/server.py" --stdio >/dev/null
+fi
+
 if command -v systemctl >/dev/null && systemctl --user status >/dev/null 2>&1; then
   mkdir -p "${HOME}/.config/systemd/user"
   cat > "${HOME}/.config/systemd/user/shared-workspace-mcp.service" <<EOF

@@ -46,6 +46,15 @@ Then connect your MCP client to:
 http://localhost:8765/sse
 ```
 
+Claude Code can also spawn the server directly over stdio:
+
+```bash
+claude mcp add --scope user shared-workspace -- python /path/to/shared-mcp/server.py --stdio
+```
+
+The installers register this automatically when the `claude` command is
+available.
+
 ## Why it exists
 
 Agents are useful. Agent handovers are usually mush.
@@ -291,6 +300,12 @@ Linux/macOS:
 
 ```bash
 ./start.sh
+```
+
+Claude Code stdio mode:
+
+```bash
+python server.py --stdio
 ```
 
 ## Checks

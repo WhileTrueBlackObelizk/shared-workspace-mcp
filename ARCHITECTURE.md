@@ -6,6 +6,9 @@ workspace coordination.
 ## Runtime
 
 - Transport: MCP over SSE at `http://localhost:8765/sse`
+- Claude Code transport: stdio via `python server.py --stdio`
+- Installers register the stdio server with `claude mcp add` when Claude Code
+  is installed.
 - Host: `127.0.0.1`
 - Entry point: `server.py`
 - Storage: UTF-8 JSON under `~/.claude/shared-workspace/`
