@@ -14,7 +14,7 @@
 <b>Shared memory &amp; verified handover for AI agents.</b><br/>
 <sub>Codex and Cowork pass work back and forth without losing the thread — and can't fake "done".</sub>
 
-<sub><i>Cairn = the Shared Workspace MCP.</i></sub>
+<sub><i>“Cairn” is the unofficial name for the <b>Shared Workspace MCP</b> (<code>shared-workspace-mcp</code>).</i></sub>
 
 </div>
 

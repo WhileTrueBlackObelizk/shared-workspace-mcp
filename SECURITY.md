@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.svg" alt="Cairn" width="100%"></p>
+
 # Security Policy
 
 Shared Workspace MCP is local-first. It binds to `127.0.0.1` and stores data in

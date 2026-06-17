@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.svg" alt="Cairn" width="100%"></p>
+
 # Handover Protocol - Cowork <-> Codex
 
 This protocol defines how Cowork and Codex exchange context through the Shared
