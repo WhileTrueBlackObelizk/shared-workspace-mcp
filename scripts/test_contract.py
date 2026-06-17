@@ -31,6 +31,8 @@ def main() -> int:
     names = asyncio.run(tool_names(module))
     expected = {
         "workspace_write",
+        "handover_prepare",
+        "handover_takeover",
         "repo_status",
         "pipeline_create",
         "token_log",
@@ -50,6 +52,33 @@ def main() -> int:
     assert refs["passed"], refs
     bad_refs = module.verify_refs("server.py:999999", ROOT)
     assert not bad_refs["passed"], bad_refs
+
+    store = {
+        "kv": {},
+        "log": [],
+        "events": [{"ts": "2026-01-01T00:00:00", "type": "modified", "path": "server.py"}],
+    }
+    module.load_kv = lambda: dict(store["kv"])
+    module.save_kv = lambda data: store.__setitem__("kv", data)
+    module.load_log = lambda: list(store["log"])
+    module.save_log = lambda entries: store.__setitem__("log", entries)
+    module.load_file_events = lambda: list(store["events"])
+
+    module._call_tool("handover_prepare", {
+        "target": "cowork",
+        "reason": "review",
+        "last_output": "implemented handover tools",
+        "next_steps": "1. review\n2. continue",
+        "source": "codex",
+    })
+    assert store["kv"]["session_owner"]["value"] == "cowork"
+    assert store["kv"]["last_output"]["value"] == "implemented handover tools"
+    takeover = module._call_tool("handover_takeover", {"agent": "cowork"})[0].text
+    assert "Owner OK." in takeover
+    assert "## workspace_dump" in takeover
+    assert "get_recent_activity" in takeover
+    assert "get_file_events" in takeover
+
     print("contract tests OK")
     return 0
 

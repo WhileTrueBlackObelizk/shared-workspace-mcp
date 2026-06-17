@@ -581,6 +581,18 @@ async def list_tools() -> list[Tool]:
             "n": {"type": "integer", "default": 20},
             "filter": {"type": "string", "default": ""},
         }),
+        tool("handover_prepare", "Prepare a complete Cowork/Codex handover.", {
+            "target": {"type": "string", "description": "codex or cowork"},
+            "reason": {"type": "string"},
+            "last_output": {"type": "string"},
+            "next_steps": {"type": "string"},
+            "notes": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["target", "reason", "last_output", "next_steps"]),
+        tool("handover_takeover", "Read workspace, activity, and file events for takeover.", {
+            "agent": {"type": "string", "description": "codex or cowork"},
+            "n": {"type": "integer", "default": 10},
+        }, ["agent"]),
         tool("repo_status", "Show git branch and short status for a repo under the user home.", {
             "root": {"type": "string", "default": str(WATCH_PATH)},
         }),
@@ -807,6 +819,50 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return text_response("No file events recorded yet.")
         lines = [f"[{e['ts']}] {e['type'].upper()}: {e['path']}" for e in reversed(events)]
         return text_response("\n".join(lines))
+
+    if name == "handover_prepare":
+        target = arguments["target"].lower()
+        if target not in {"codex", "cowork"}:
+            return text_response("target must be 'codex' or 'cowork'.")
+        source = arguments.get("source", "unknown")
+        ts = now()
+        kv = load_kv()
+        for key, value in {
+            "last_output": arguments["last_output"],
+            "next_steps": arguments["next_steps"],
+            "handover_notes": arguments.get("notes", "") or arguments["reason"],
+            "session_owner": target,
+        }.items():
+            kv[key] = {"value": value, "updated_at": ts, "by": source}
+        save_kv(kv)
+        append_log(source, "handover", f"to {target}: {arguments['reason']}")
+        return text_response(f"Handover prepared for {target}.\nNext owner: {target}")
+
+    if name == "handover_takeover":
+        agent = arguments["agent"].lower()
+        if agent not in {"codex", "cowork"}:
+            return text_response("agent must be 'codex' or 'cowork'.")
+        n = int(arguments.get("n", 10))
+        kv = load_kv()
+        owner = kv.get("session_owner", {}).get("value", "")
+        owner_line = "Owner OK." if owner == agent else f"Owner warning: session_owner is '{owner or 'unset'}', not '{agent}'."
+        append_log(agent, "session_start", "takeover from MCP")
+
+        workspace = "Workspace is empty."
+        if kv:
+            workspace = "\n\n".join(f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items())
+
+        activity_entries = load_log()[-n:]
+        activity = "No activity logged yet."
+        if activity_entries:
+            activity = "\n".join(f"[{e['ts']}] {e['source']}: {e['action']} - {e['detail']}" for e in reversed(activity_entries))
+
+        events = load_file_events()[-n:]
+        file_events = "No file events recorded yet."
+        if events:
+            file_events = "\n".join(f"[{e['ts']}] {e['type'].upper()}: {e['path']}" for e in reversed(events))
+
+        return text_response(f"{owner_line}\n\n## workspace_dump\n{workspace}\n\n## get_recent_activity {n}\n{activity}\n\n## get_file_events {n}\n{file_events}")
 
     if name == "repo_status":
         root = repo_root(arguments.get("root"))

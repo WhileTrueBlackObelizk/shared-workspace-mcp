@@ -57,6 +57,13 @@ get_recent_activity
 get_file_events
 ```
 
+Handover:
+
+```text
+handover_prepare
+handover_takeover
+```
+
 Code workspace:
 
 ```text
