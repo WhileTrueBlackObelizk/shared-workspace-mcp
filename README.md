@@ -193,21 +193,45 @@ to declare itself done.
 
 ```text
 gate_policy
-gate_check step=review root="C:\path\to\repo"
-gate_advance pipeline_id=implement-auth-endpoint root="C:\path\to\repo"
+gate_check step=review root="C:\path\to\repo" source=cowork
+gate_advance pipeline_id=implement-auth-endpoint root="C:\path\to\repo" source=cowork
 drift_report pipeline_id=implement-auth-endpoint root="C:\path\to\repo"
 ```
 
-Hard gates by step:
+The gates are not just presence checks ("does an artifact exist?"). They borrow
+from fields outside software so they catch failures the industry-default check
+misses:
 
-| Step | Requires |
-| --- | --- |
-| `intake` | active task, session owner, recent session/task activity |
-| `plan` | `current_plan` and at least one goal |
-| `implement` | repo status can run and there is diff/file-event evidence |
-| `test` | a recent successful `run_check` result |
-| `review` | a recent successful `verify_file_refs` result |
-| `handover` | `last_output`, `next_steps`, and token usage logged |
+- **Chain of custody / sample integrity** (forensics, clinical labs) and **cache
+  invalidation** (CS): test/review evidence only counts if it *postdates the last
+  relevant change*. A green check from before the last edit no longer certifies
+  the code.
+- **Minimum Equipment List** (aviation): each item is `[hard]` (blocks advance)
+  or `[advisory]` (warns, line keeps moving).
+- **Four-eyes / read-back** (aviation CRM) and **segregation of duties**
+  (accounting): pass `source=` so the gate can warn when the actor advancing is
+  the same one that produced the evidence (self-certification).
+- **Pre-registration** (open science): the definition of done
+  (`acceptance_criteria`) is fixed in `plan`, before `implement`, so goalposts
+  can't move.
+- **Structured sign-out / surgical time-out** (medicine, SBAR): a handover must
+  state outcome, next steps, and known risks explicitly.
+- **Andon cord / Jidoka** (Toyota): a blocked gate records a high-severity lesson
+  (`learning_log_error`) with its root cause instead of being retried silently.
+
+Gates by step (`[H]` hard / blocking, `[A]` advisory / warning):
+
+| Step | Hard gates `[H]` | Advisory `[A]` |
+| --- | --- | --- |
+| `intake` | session owner, active task, recent session/task activity | — |
+| `plan` | `current_plan` (≥20 chars), ≥1 goal, `acceptance_criteria` pre-registered (≥20 chars) | — |
+| `implement` | repo status runs; diff or file-event evidence | — |
+| `test` | a successful `run_check` that **postdates the last change** | certifying check ran under a different `source` |
+| `review` | passing `verify_file_refs` that **postdates the last change** | independent verifier; `acceptance_criteria` still on record |
+| `handover` | `last_output` (≥30 chars), `next_steps` (≥30 chars), risks stated in `handover_notes`/`blockers` | token usage logged |
+
+`drift_report` surfaces `latest_check_fresh`, `latest_evidence_fresh`, and
+`last_change_ts` so stale-evidence drift is visible at a glance.
 
 The sharpest gate is coordinate verification:
 
