@@ -86,6 +86,7 @@ matters.
 | Shared memory | `workspace_write`, `workspace_read`, `workspace_dump` |
 | Activity log | `log_activity`, `get_recent_activity` |
 | File events | `get_file_events` |
+| Handover | `handover_prepare`, `handover_takeover` |
 | Code workspace | `repo_status`, `git_diff`, `search_code`, `read_file`, `run_check` |
 | Pipelines | `pipeline_create`, `pipeline_next`, `pipeline_update_step`, `pipeline_finish` |
 | Token tracking | `estimate_tokens`, `token_log`, `token_summary`, `context_snapshot` |
@@ -130,6 +131,20 @@ pytest
 npm_test
 npm_build
 ```
+
+## Semi-auto handover
+
+Use the handover tools instead of manually writing every key:
+
+```text
+handover_prepare target=codex reason="implementation" last_output="Plan ready" next_steps="1. Build it\n2. Run checks" source=cowork
+handover_takeover agent=codex
+```
+
+`handover_prepare` writes `last_output`, `next_steps`, `handover_notes`, and
+`session_owner`, then logs the handover. `handover_takeover` reads
+`workspace_dump`, `get_recent_activity 10`, and `get_file_events 10`, and warns
+if the `session_owner` points at someone else.
 
 ## Learning from errors
 

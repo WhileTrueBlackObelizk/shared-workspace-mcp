@@ -180,6 +180,22 @@ does not validate the interpretation of the code.
 
 ## 9. Handover flows
 
+Preferred tool flow:
+
+```text
+handover_prepare target=codex reason=[why] last_output=[result] next_steps=[1..N] notes=[notes] source=cowork
+handover_takeover agent=codex
+```
+
+or:
+
+```text
+handover_prepare target=cowork reason=[why] last_output=[result] next_steps=[1..N] notes=[notes] source=codex
+handover_takeover agent=cowork
+```
+
+Use the manual flow only when the handover tools are unavailable.
+
 Cowork to Codex:
 
 ```text
