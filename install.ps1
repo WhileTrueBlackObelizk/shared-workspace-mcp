@@ -61,6 +61,26 @@ function Update-ClaudeDesktopConfig {
   return $true
 }
 
+function Install-ClaudeCoworkExtension {
+  param(
+    [Parameter(Mandatory = $true)] [string] $ClaudeRoot,
+    [Parameter(Mandatory = $true)] [string] $InstallDir,
+    [Parameter(Mandatory = $true)] [string] $PythonPath,
+    [Parameter(Mandatory = $true)] [string] $ServerPath
+  )
+
+  if (-not (Test-Path $ClaudeRoot)) {
+    return $false
+  }
+
+  $script = Join-Path $InstallDir "scripts\install_claude_extension.py"
+  & $PythonPath $script `
+    --claude-root $ClaudeRoot `
+    --python $PythonPath `
+    --server $ServerPath | Out-Null
+  return $true
+}
+
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   throw "git is required. Install Git for Windows, then rerun this command."
 }
@@ -102,6 +122,25 @@ foreach ($configPath in ($desktopConfigPaths | Sort-Object -Unique)) {
   }
 }
 
+$coworkRoots = @()
+if ($env:APPDATA) {
+  $coworkRoots += Join-Path $env:APPDATA "Claude"
+}
+if ($env:LOCALAPPDATA) {
+  $packageRoot = Join-Path $env:LOCALAPPDATA "Packages"
+  if (Test-Path $packageRoot) {
+    $coworkRoots += Get-ChildItem -Path $packageRoot -Directory -Filter "Claude_*" |
+      ForEach-Object { Join-Path $_.FullName "LocalCache\Roaming\Claude" }
+  }
+}
+
+$coworkExtensionsUpdated = 0
+foreach ($root in ($coworkRoots | Sort-Object -Unique)) {
+  if (Install-ClaudeCoworkExtension -ClaudeRoot $root -InstallDir $installDir -PythonPath $pythonPath -ServerPath $serverPath) {
+    $coworkExtensionsUpdated++
+  }
+}
+
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $wrapper = Join-Path $installDir "start-forever.cmd"
 $value = "cmd.exe /c start `"Shared Workspace MCP`" /min `"$wrapper`""
@@ -118,5 +157,8 @@ if (-not $existing) {
 Write-Host "Shared Workspace MCP installed."
 if ($desktopConfigsUpdated -gt 0) {
   Write-Host "Claude Desktop/Cowork config updated. Restart Claude to load the MCP tools."
+}
+if ($coworkExtensionsUpdated -gt 0) {
+  Write-Host "Claude Desktop/Cowork extension installed. Restart Claude to load the MCP tools."
 }
 Write-Host "URL: http://localhost:8765/sse"

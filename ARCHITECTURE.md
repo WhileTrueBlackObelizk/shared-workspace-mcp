@@ -11,6 +11,9 @@ workspace coordination.
   is installed.
 - Windows installer also writes the same stdio server into detected Claude
   Desktop/Cowork `claude_desktop_config.json` files.
+- Windows installer also installs a minimal enabled Claude Extension wrapper in
+  detected Claude Desktop/Cowork roots because local-agent Cowork loads dynamic
+  extension MCP servers.
 - Host: `127.0.0.1`
 - Entry point: `server.py`
 - Storage: UTF-8 JSON under `~/.claude/shared-workspace/`
