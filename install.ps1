@@ -17,6 +17,14 @@ if (Test-Path $installDir) {
 & (Join-Path $installDir "start.bat") --setup-only
 git -C $installDir config core.hooksPath .githooks
 
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+  claude mcp remove shared-workspace -s user 2>$null | Out-Null
+  claude mcp add --scope user shared-workspace -- `
+    (Join-Path $installDir ".venv\Scripts\python.exe") `
+    (Join-Path $installDir "server.py") `
+    --stdio | Out-Null
+}
+
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $wrapper = Join-Path $installDir "start-forever.cmd"
 $value = "cmd.exe /c start `"Shared Workspace MCP`" /min `"$wrapper`""

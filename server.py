@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, quote
 import uvicorn
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse
@@ -1299,6 +1300,11 @@ async def handle_sse(request):
         await server.run(streams[0], streams[1], server.create_initialization_options())
 
 
+async def handle_stdio():
+    async with stdio_server() as streams:
+        await server.run(streams[0], streams[1], server.create_initialization_options())
+
+
 def feedback_page(prompt_id: str, question: str, message: str = "") -> str:
     safe_id = escape(prompt_id)
     safe_question = escape(question or "War diese Agent-Antwort hilfreich?")
@@ -1373,6 +1379,12 @@ app = Starlette(routes=[
 if __name__ == "__main__":
     if "--self-check" in sys.argv:
         run_self_check()
+        raise SystemExit(0)
+    if "--stdio" in sys.argv:
+        import anyio
+
+        start_watcher()
+        anyio.run(handle_stdio)
         raise SystemExit(0)
     start_watcher()
     logger.info("Shared Workspace MCP -> http://localhost:%s/sse", PORT)
