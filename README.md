@@ -173,6 +173,13 @@ goal_update goal_id=publish-mcp-repo status=active note="README done" source=cod
 goal_complete goal_id=publish-mcp-repo outcome="Pushed to GitHub" source=codex
 ```
 
+`goal_complete` self-scores the goal 0-10 from evidence already on record
+(pre-registered criteria, clean gates, fresh evidence, no blocked gate, user
+feedback) and adds XP / a level. It is anti-flattery: missing evidence scores 0,
+and user feedback is the anchor — no "good" rating means the score is capped
+below max, a "bad" rating subtracts. The level (`workspace_read level`) is a
+quality trend, not a reward the agent hands itself.
+
 Use a pipeline when the task has phases or handover risk:
 
 ```text
