@@ -31,7 +31,7 @@ jobs:
         run: python scripts/check_secrets.py
 
       - name: Compile
-        run: python -m py_compile server.py scripts/check_secrets.py scripts/test_contract.py
+        run: python -m py_compile server.py scripts/check_secrets.py scripts/install_claude_extension.py scripts/test_contract.py
 
       - name: Self-check
         run: python server.py --self-check
@@ -65,6 +65,14 @@ jobs:
 
       - name: Linux setup only
         run: ./start.sh --setup-only
+
+      - name: Claude extension smoke
+        run: |
+          .venv/bin/python scripts/install_claude_extension.py \
+            --claude-root "$RUNNER_TEMP/Claude" \
+            --python "$PWD/.venv/bin/python" \
+            --server "$PWD/server.py"
+          test -f "$RUNNER_TEMP/Claude/Claude Extensions/ant.dir.whiletrueblackobelizk.shared-workspace-mcp/manifest.json"
 
       - name: Venv self-check
         run: .venv/bin/python server.py --self-check

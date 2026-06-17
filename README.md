@@ -56,8 +56,9 @@ The installers register this automatically when the `claude` command is
 available.
 
 On Windows, the installer also updates the Claude Desktop/Cowork config when it
-can find it. Restart Claude after install, then ask Cowork to check for
-`workspace_dump` or `gate_check`.
+can find it and installs an enabled local Claude Extension wrapper for Cowork.
+Restart Claude after install, then ask Cowork to check for `workspace_dump` or
+`gate_check`.
 
 ## Why it exists
 
