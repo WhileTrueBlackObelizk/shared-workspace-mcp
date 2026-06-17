@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a small useful MCP capability.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What outcome should this help an agent reach?
+    validations:
+      required: true
+  - type: textarea
+    id: smallest
+    attributes:
+      label: Smallest useful version
+      description: What is the boring first version that would already help?
+    validations:
+      required: true

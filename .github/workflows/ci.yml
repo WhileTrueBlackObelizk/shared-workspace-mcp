@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Secret scan
+        run: python scripts/check_secrets.py
+
+      - name: Compile
+        run: python -m py_compile server.py scripts/check_secrets.py scripts/test_contract.py
+
+      - name: Self-check
+        run: python server.py --self-check
+
+      - name: Contract tests
+        run: python scripts/test_contract.py
+
+  installer-smoke:
+    name: Installer smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n start.sh
+
+      - name: Linux setup only
+        run: ./start.sh --setup-only
+
+      - name: Venv self-check
+        run: .venv/bin/python server.py --self-check

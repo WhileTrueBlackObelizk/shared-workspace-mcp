@@ -15,6 +15,7 @@ if (Test-Path $installDir) {
 }
 
 & (Join-Path $installDir "start.bat") --setup-only
+git -C $installDir config core.hooksPath .githooks
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $wrapper = Join-Path $installDir "start-forever.cmd"

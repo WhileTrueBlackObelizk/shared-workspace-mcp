@@ -180,6 +180,25 @@ workspace_write active_task "-" source=[cowork|codex]
 pipeline_finish pipeline_id=[id] note=[summary]
 ```
 
+## 10. Before pushing repo changes
+
+Run the cheap checks:
+
+```text
+python scripts/check_secrets.py
+python server.py --self-check
+python scripts/test_contract.py
+```
+
+If architecture, setup, tool contracts, learning, pipeline, token tracking, or
+feedback behavior changed, update these before pushing:
+
+```text
+README.md
+ARCHITECTURE.md
+handover-protocol.md
+```
+
 Server URL:
 
 ```text

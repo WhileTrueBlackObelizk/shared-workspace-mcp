@@ -1,0 +1,63 @@
+<svg width="1200" height="420" viewBox="0 0 1200 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Shared Workspace MCP animated system map</title>
+  <desc id="desc">Two agents exchange context through a local MCP server with pipelines, learning, feedback, and code tools.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08111F"/>
+      <stop offset="0.48" stop-color="#102437"/>
+      <stop offset="1" stop-color="#0E2B24"/>
+    </linearGradient>
+    <linearGradient id="line" x1="180" y1="0" x2="1020" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DD3FC" stop-opacity="0.15"/>
+      <stop offset="0.5" stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#86EFAC" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="soft">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="420" rx="26" fill="url(#bg)"/>
+  <g opacity="0.18">
+    <path d="M0 92H1200M0 180H1200M0 268H1200M0 356H1200" stroke="#D8F3FF"/>
+    <path d="M120 0V420M260 0V420M400 0V420M540 0V420M680 0V420M820 0V420M960 0V420M1100 0V420" stroke="#D8F3FF"/>
+  </g>
+
+  <g filter="url(#soft)">
+    <rect x="78" y="122" width="234" height="176" rx="18" fill="#F8FAFC"/>
+    <text x="195" y="169" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="26" font-weight="800" fill="#0F172A">Cowork</text>
+    <text x="195" y="207" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#334155">plans, writes context</text>
+    <text x="195" y="235" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#334155">hands off cleanly</text>
+
+    <rect x="483" y="76" width="234" height="268" rx="22" fill="#FFFFFF"/>
+    <text x="600" y="128" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="27" font-weight="900" fill="#0F172A">Shared MCP</text>
+    <text x="600" y="168" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#334155">memory</text>
+    <text x="600" y="197" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#334155">pipelines</text>
+    <text x="600" y="226" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#334155">learning</text>
+    <text x="600" y="255" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#334155">feedback</text>
+    <text x="600" y="284" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#334155">safe code tools</text>
+
+    <rect x="888" y="122" width="234" height="176" rx="18" fill="#F8FAFC"/>
+    <text x="1005" y="169" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="26" font-weight="800" fill="#0F172A">Codex</text>
+    <text x="1005" y="207" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#334155">executes, checks</text>
+    <text x="1005" y="235" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#334155">returns next steps</text>
+  </g>
+
+  <path d="M312 210H483" stroke="url(#line)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M717 210H888" stroke="url(#line)" stroke-width="10" stroke-linecap="round"/>
+
+  <circle r="9" fill="#FDE68A">
+    <animateMotion dur="2.7s" repeatCount="indefinite" path="M312 210H483"/>
+  </circle>
+  <circle r="9" fill="#86EFAC">
+    <animateMotion dur="2.7s" begin="0.9s" repeatCount="indefinite" path="M717 210H888"/>
+  </circle>
+  <circle r="9" fill="#7DD3FC">
+    <animateMotion dur="2.7s" begin="1.8s" repeatCount="indefinite" path="M888 226H717"/>
+  </circle>
+
+  <g transform="translate(356 330)">
+    <rect width="488" height="48" rx="24" fill="#0B1220" fill-opacity="0.68" stroke="#D8F3FF" stroke-opacity="0.22"/>
+    <text x="244" y="31" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#E5F6FF">local-first agent memory, without prompt bloat</text>
+  </g>
+</svg>

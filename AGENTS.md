@@ -11,7 +11,8 @@ handover conventions:
 3. Update `handover-protocol.md` if Cowork/Codex workflow changes.
 4. Run the smallest relevant check:
    `python server.py --self-check`
-5. Push the architectural change to GitHub.
+5. Run `python scripts/check_secrets.py` before every push.
+6. Push the architectural change to GitHub.
 
 Keep changes ponytail-small: no new dependencies unless the stdlib cannot do
 the job safely.

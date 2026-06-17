@@ -20,7 +20,9 @@ else
 fi
 
 chmod +x "${install_dir}/start.sh"
+chmod +x "${install_dir}/.githooks/pre-commit" 2>/dev/null || true
 "${install_dir}/start.sh" --setup-only
+git -C "${install_dir}" config core.hooksPath .githooks
 
 if command -v systemctl >/dev/null && systemctl --user status >/dev/null 2>&1; then
   mkdir -p "${HOME}/.config/systemd/user"

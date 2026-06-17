@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+python scripts/check_secrets.py
+python server.py --self-check

@@ -126,6 +126,21 @@ npm_test
 npm_build
 ```
 
+## Repository standards
+
+The repository has free guardrails that should stay in place:
+
+- `scripts/check_secrets.py` scans tracked files for common credentials and
+  high-entropy tokens.
+- `.githooks/pre-commit` runs the secret scan and server self-check locally.
+- `.github/workflows/ci.yml` runs secret scan, compile, self-check, contract
+  tests, and installer smoke checks on GitHub Actions.
+- `.github/dependabot.yml` keeps pip and GitHub Actions dependencies fresh.
+- `.github/pull_request_template.md` requires checks and architecture/doc
+  updates to be acknowledged.
+
+No paid service is required for these checks on the public GitHub repository.
+
 ## Pipeline model
 
 Pipelines are intentionally simple JSON state machines. The default flow is:

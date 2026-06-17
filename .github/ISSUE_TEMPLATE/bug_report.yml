@@ -1,0 +1,24 @@
+name: Bug report
+description: Something in the MCP server, installer, or workflow is broken.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the command, tool call, or installer step that failed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Remove tokens, secrets, hostnames, and private paths before posting.
+      render: text
