@@ -67,6 +67,28 @@ pipeline_finish pipeline_id=[id] note=[summary]
 
 Keep `current_plan` and `next_steps` human-readable even when a pipeline exists.
 
+For agent-run work, prefer gated progress:
+
+```text
+gate_check pipeline_id=[id] step=[step] root=[repo]
+gate_advance pipeline_id=[id] root=[repo]
+drift_report pipeline_id=[id] root=[repo]
+```
+
+`pipeline_update_step` is still allowed for manual correction. Agents should use
+`gate_advance` when marking a step done.
+
+Gate summary:
+
+| Step | Must be backed by |
+| --- | --- |
+| `intake` | session owner, active task, recent activity |
+| `plan` | `current_plan` and at least one goal |
+| `implement` | git/file-event evidence |
+| `test` | successful `run_check` |
+| `review` | successful `verify_file_refs` |
+| `handover` | `last_output`, `next_steps`, token log |
+
 ## 5. Code workspace tools
 
 Prefer these MCP tools before free-form shell access:
@@ -145,7 +167,18 @@ feedback_summary n=20
 
 The feedback prompt returns local clickable links backed by `feedback.json`.
 
-## 8. Handover flows
+## 8. Evidence verification
+
+Before review handover, verify concrete file references:
+
+```text
+verify_file_refs text="server.py:1-20 and README.md:40"
+```
+
+The verifier only checks that coordinates exist and optional snippets match. It
+does not validate the interpretation of the code.
+
+## 9. Handover flows
 
 Cowork to Codex:
 
@@ -169,7 +202,7 @@ workspace_write session_owner cowork source=codex
 log_activity source=codex action=handover detail="to cowork: [task]"
 ```
 
-## 9. Cleanup
+## 10. Cleanup
 
 After a task is really complete:
 
@@ -180,7 +213,7 @@ workspace_write active_task "-" source=[cowork|codex]
 pipeline_finish pipeline_id=[id] note=[summary]
 ```
 
-## 10. Before pushing repo changes
+## 11. Before pushing repo changes
 
 Run the cheap checks:
 

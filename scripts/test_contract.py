@@ -37,11 +37,19 @@ def main() -> int:
         "learning_log_error",
         "goal_start",
         "feedback_maybe",
+        "verify_file_refs",
+        "gate_check",
+        "gate_advance",
+        "drift_report",
     }
     missing = expected - names
     assert not missing, f"missing tools: {sorted(missing)}"
     assert module.should_skip(ROOT / ".venv" / "x.py")
     assert not module.should_skip(ROOT / "server.py")
+    refs = module.verify_refs("server.py:1-3", ROOT)
+    assert refs["passed"], refs
+    bad_refs = module.verify_refs("server.py:999999", ROOT)
+    assert not bad_refs["passed"], bad_refs
     print("contract tests OK")
     return 0
 

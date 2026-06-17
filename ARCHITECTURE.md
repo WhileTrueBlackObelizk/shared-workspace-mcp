@@ -23,6 +23,9 @@ workspace coordination.
 | `learning.json` | Errors, causes, fixes, and reusable lessons |
 | `goals.json` | Goal state and progress history |
 | `feedback.json` | Feedback prompts and user ratings |
+| `check_runs.json` | Safe `run_check` history used by gates |
+| `gate_results.json` | Gate evaluations and pass/fail state |
+| `evidence.json` | Verified evidence such as file:line checks |
 
 Writes are atomic: data is written to a temporary JSON file, then replaced.
 
@@ -101,6 +104,18 @@ feedback_log
 feedback_summary
 ```
 
+Drift gates:
+
+```text
+verify_file_refs
+check_run_history
+gate_policy
+gate_check
+gate_status
+gate_advance
+drift_report
+```
+
 HTTP routes:
 
 ```text
@@ -150,6 +165,28 @@ intake -> plan -> implement -> test -> review -> handover
 ```
 
 This is enough for Cowork/Codex coordination without owning a full job queue.
+
+## Gate model
+
+Gates are hardcoded on purpose. The first version is boring and inspectable:
+
+| Step | Gate |
+| --- | --- |
+| `intake` | session owner, active task, recent task/session activity |
+| `plan` | current plan and at least one goal |
+| `implement` | git status works and there is diff or file-event evidence |
+| `test` | recent successful `run_check` result |
+| `review` | recent successful `verify_file_refs` evidence |
+| `handover` | `last_output`, `next_steps`, and token usage exist |
+
+`gate_check` evaluates a step. `gate_advance` evaluates the step and only then
+marks it `done` in the pipeline. If the gate fails, the pipeline does not
+advance and a `blocked` activity entry is written.
+
+`verify_file_refs` follows a strict rule: it verifies that file:line coordinates
+exist and optional snippets appear at those coordinates. It does not interpret
+the code or validate the claim. This prevents hallucinated references while
+keeping review responsibility explicit.
 
 ## Token measurement
 

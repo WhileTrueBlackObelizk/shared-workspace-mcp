@@ -78,6 +78,7 @@ matters.
 | Learning loop | `learning_log_error`, `learning_log_lesson`, `learning_search`, `learning_recent` |
 | Goals | `goal_start`, `goal_update`, `goal_status`, `goal_complete` |
 | Feedback | `feedback_maybe`, `feedback_log`, `feedback_summary` |
+| Drift gates | `verify_file_refs`, `gate_check`, `gate_advance`, `drift_report` |
 
 ## The agent loop
 
@@ -155,6 +156,39 @@ Default pipeline:
 ```text
 intake -> plan -> implement -> test -> review -> handover
 ```
+
+## Drift gates
+
+Pipelines can be advanced through hardcoded gates instead of trusting the agent
+to declare itself done.
+
+```text
+gate_policy
+gate_check step=review root="C:\path\to\repo"
+gate_advance pipeline_id=implement-auth-endpoint root="C:\path\to\repo"
+drift_report pipeline_id=implement-auth-endpoint root="C:\path\to\repo"
+```
+
+Hard gates by step:
+
+| Step | Requires |
+| --- | --- |
+| `intake` | active task, session owner, recent session/task activity |
+| `plan` | `current_plan` and at least one goal |
+| `implement` | repo status can run and there is diff/file-event evidence |
+| `test` | a recent successful `run_check` result |
+| `review` | a recent successful `verify_file_refs` result |
+| `handover` | `last_output`, `next_steps`, and token usage logged |
+
+The sharpest gate is coordinate verification:
+
+```text
+verify_file_refs text="server.py:1-20 proves the server has a docstring"
+```
+
+It verifies only that `server.py:1-20` exists, and optionally that a snippet is
+really present in that range. It does not judge interpretation. That keeps the
+agent honest without pretending a script can do code review.
 
 ## Clickable feedback
 
@@ -240,6 +274,9 @@ token_usage.json
 learning.json
 goals.json
 feedback.json
+check_runs.json
+gate_results.json
+evidence.json
 ```
 
 ## Manual start
