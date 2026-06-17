@@ -178,6 +178,33 @@ The browser page writes to:
 ~/.claude/shared-workspace/feedback.json
 ```
 
+## Token savings in practice
+
+A representative repo handover was measured with the built-in
+`estimate_tokens` tool. The task was: inspect the repo, understand standards,
+run checks, explain status, and write a handover.
+
+| Approach | Estimated input tokens | Difference |
+| --- | ---: | ---: |
+| Full prompt with `README`, `ARCHITECTURE`, `handover-protocol`, `AGENTS`, `SECURITY` pasted in | `4,231` | baseline |
+| MCP bootstrap prompt only | `137` | `96.8%` less |
+| MCP bootstrap plus real tool outputs | `1,042` | `75.4%` less |
+
+Measured tool output for the MCP path:
+
+```text
+workspace_dump       232 tokens
+get_recent_activity  296 tokens
+get_file_events      271 tokens
+learning_search        5 tokens
+repo_status           17 tokens
+search_code           74 tokens
+```
+
+These numbers are local estimates, not provider billing. They are useful for
+trend tracking and planning. Exact API usage should still be logged with
+`token_log` when a provider returns real `input_tokens` and `output_tokens`.
+
 ## Secret safety
 
 This repo tries hard to avoid accidental credential commits:
