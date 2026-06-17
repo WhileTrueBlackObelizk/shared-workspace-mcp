@@ -84,9 +84,51 @@ def main() -> int:
     assert "get_file_events" in takeover
 
     check_gate_policy(module)
+    check_self_score(module)
 
     print("contract tests OK")
     return 0
+
+
+def check_self_score(module) -> None:
+    """Evidence-based self-score: feedback caps the top, bad feedback subtracts,
+    missing evidence scores 0 (anti-flattery)."""
+    root = ROOT
+    ts_event, ts_after = "2026-06-17T09:00:00", "2026-06-17T10:00:00"
+    st = {
+        "kv": {"acceptance_criteria": {"value": "Rejects bad input with a clear error; test added."}},
+        "gates": [{"passed": True, "pipeline_id": ""}],
+        "events": [{"ts": ts_event, "type": "modified", "path": str(root / "x.py")}],
+        "checks": [{"ts": ts_after, "check": "pytest", "root": str(root), "passed": True, "source": "codex"}],
+        "evidence": [{"ts": ts_after, "type": "file_refs", "root": str(root), "passed": True, "source": "codex"}],
+        "learning": [], "feedback": [],
+    }
+    module.load_kv = lambda: dict(st["kv"])
+    module.load_gate_results = lambda: list(st["gates"])
+    module.load_file_events = lambda: list(st["events"])
+    module.load_check_runs = lambda: list(st["checks"])
+    module.load_evidence = lambda: list(st["evidence"])
+    module.load_learning = lambda: list(st["learning"])
+    module.load_feedback = lambda: list(st["feedback"])
+    goal = {"created_at": "2026-06-17T08:00:00", "pipeline_id": ""}
+
+    # everything green but no feedback yet -> capped below max
+    capped = module.score_goal(goal, root)
+    assert capped["score"] == 8, capped
+    # user confirms -> full marks
+    st["feedback"] = [{"rating": "good"}]
+    assert module.score_goal(goal, root)["score"] == 10
+    # bad feedback subtracts
+    st["feedback"] = [{"rating": "bad"}]
+    assert module.score_goal(goal, root)["score"] == 6
+    # missing pre-registration + a gate blocked since start -> those score 0 (anti-flattery)
+    st["feedback"] = [{"rating": "good"}]
+    st["kv"] = {}
+    st["learning"] = [{"ts": "2026-06-17T09:30:00", "tags": ["andon"], "error": "gate blocked"}]
+    low = module.score_goal(goal, root)
+    assert low["score"] == 6, low  # 0 + gates2 + evidence2 + 0 + good2
+    by_name = {i["name"]: i["points"] for i in low["items"]}
+    assert by_name["pre_registered"] == 0 and by_name["first_pass"] == 0, low
 
 
 def check_gate_policy(module) -> None:

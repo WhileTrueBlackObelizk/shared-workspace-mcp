@@ -58,6 +58,7 @@ MAX_CHECK_RUNS = 1000
 MAX_GATE_RESULTS = 1000
 MAX_EVIDENCE = 1000
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
+LEVEL_STEP = 50  # XP per level
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
 # Gate policy. Cross-disciplinary, not just "industry-expected" presence checks:
 #  - Chain-of-custody / sample integrity (forensics, clinical labs) + cache
@@ -597,6 +598,44 @@ def andon_log(result: dict[str, Any], source: str) -> None:
     })
 
 
+def score_goal(goal: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Evidence-based self-score for a completed goal (0-10).
+
+    Anti-flattery: points come only from stored evidence; absence scores 0,
+    never benefit of the doubt. User feedback is the anchor — it caps the top
+    (no "good" rating, no full marks) and a "bad" rating subtracts.
+    """
+    kv = load_kv()
+    pid = goal.get("pipeline_id", "")
+    gates = [g for g in load_gate_results() if not pid or g.get("pipeline_id") == pid]
+    latest_gate = gates[-1] if gates else None
+    check = recent_successful_check(root)
+    evidence = recent_verified_evidence(root)
+    fb = next((e for e in reversed(load_feedback()) if e.get("rating")), None)
+    started = goal.get("created_at", "")
+    andon_after = any("andon" in e.get("tags", []) and e.get("ts", "") >= started for e in load_learning())
+
+    items: list[dict[str, Any]] = []
+
+    def add(name: str, earned: int, mx: int, detail: str) -> None:
+        items.append({"name": name, "points": earned, "max": mx, "detail": detail})
+
+    add("pre_registered", 2 if len(kv.get("acceptance_criteria", {}).get("value", "").strip()) >= 20 else 0, 2,
+        "acceptance_criteria were fixed before implementing")
+    add("gates_clean", 2 if (latest_gate and latest_gate.get("passed")) else 0, 2,
+        "most recent gate for this work passed its hard checks")
+    add("evidence_fresh", 2 if (check and is_fresh(check, root) and evidence and is_fresh(evidence, root)) else 0, 2,
+        "test + review evidence postdate the last change")
+    add("first_pass", 2 if not andon_after else 0, 2,
+        "no gate was blocked (no andon lesson) since the goal started")
+    rating = fb.get("rating") if fb else None
+    fb_pts = {"good": 2, "mixed": 1, "bad": -2}.get(rating, 0)
+    add("user_confirmed", fb_pts, 2, f"latest user feedback: {rating or 'none yet'}")
+
+    score = sum(i["points"] for i in items)
+    return {"score": score, "max": 10, "feedback": rating, "items": items}
+
+
 class _Handler(FileSystemEventHandler):
     def _push(self, event_type: str, path: str, dest_path: str = "") -> None:
         if should_skip(Path(path)) or (dest_path and should_skip(Path(dest_path))):
@@ -789,9 +828,10 @@ async def list_tools() -> list[Tool]:
         tool("goal_status", "Show one goal or all goals.", {
             "goal_id": {"type": "string", "default": ""},
         }),
-        tool("goal_complete", "Complete a goal and record the outcome.", {
+        tool("goal_complete", "Complete a goal, self-score it on evidence, and add XP/level.", {
             "goal_id": {"type": "string"},
             "outcome": {"type": "string", "default": ""},
+            "root": {"type": "string", "default": str(WATCH_PATH)},
             "source": {"type": "string", "default": "unknown"},
         }, ["goal_id"]),
         tool("feedback_maybe", "Maybe ask the user for feedback with clickable local links.", {
@@ -1257,16 +1297,32 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if goal_id not in data:
             return text_response("Goal not found.")
         goal = data[goal_id]
+        source = arguments.get("source", "unknown")
         goal.update({"status": "done", "outcome": arguments.get("outcome", ""), "updated_at": now()})
         goal.setdefault("history", []).append({
             "ts": now(),
-            "source": arguments.get("source", "unknown"),
+            "source": source,
             "status": "done",
             "note": arguments.get("outcome", ""),
         })
+        scorecard = score_goal(goal, repo_root(arguments.get("root")))
+        goal["self_score"] = scorecard
         save_goals(data)
-        append_log(arguments.get("source", "unknown"), "goal_complete", goal_id)
-        return text_response(json.dumps(goal, indent=2, ensure_ascii=False))
+        kv = load_kv()
+        xp = int(kv.get("xp", {}).get("value", "0") or 0) + max(0, scorecard["score"])
+        level = 1 + xp // LEVEL_STEP
+        prev_level = int(kv.get("level", {}).get("value", "1") or 1)
+        kv["xp"] = {"value": str(xp), "updated_at": now(), "by": source}
+        kv["level"] = {"value": str(level), "updated_at": now(), "by": source}
+        save_kv(kv)
+        append_learning({
+            "type": "lesson", "source": source, "task": goal_id,
+            "lesson": f"self-score {scorecard['score']}/10 (feedback={scorecard['feedback'] or 'none'}); xp={xp} level={level}",
+            "tags": ["self_score"],
+        })
+        append_log(source, "goal_complete", f"{goal_id} score={scorecard['score']}/10 level={level}")
+        levelup = f"\nLEVEL UP -> {level}" if level > prev_level else ""
+        return text_response(json.dumps({"goal": goal, "scorecard": scorecard, "xp": xp, "level": level}, indent=2, ensure_ascii=False) + levelup)
 
     if name == "feedback_maybe":
         entries = load_feedback()
