@@ -9,6 +9,8 @@ workspace coordination.
 - Claude Code transport: stdio via `python server.py --stdio`
 - Installers register the stdio server with `claude mcp add` when Claude Code
   is installed.
+- Windows installer also writes the same stdio server into detected Claude
+  Desktop/Cowork `claude_desktop_config.json` files.
 - Host: `127.0.0.1`
 - Entry point: `server.py`
 - Storage: UTF-8 JSON under `~/.claude/shared-workspace/`

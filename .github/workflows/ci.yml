@@ -52,6 +52,17 @@ jobs:
           bash -n install.sh
           bash -n start.sh
 
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
       - name: Linux setup only
         run: ./start.sh --setup-only
 

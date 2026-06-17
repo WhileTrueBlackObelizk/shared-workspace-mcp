@@ -55,6 +55,10 @@ claude mcp add --scope user shared-workspace -- python /path/to/shared-mcp/serve
 The installers register this automatically when the `claude` command is
 available.
 
+On Windows, the installer also updates the Claude Desktop/Cowork config when it
+can find it. Restart Claude after install, then ask Cowork to check for
+`workspace_dump` or `gate_check`.
+
 ## Why it exists
 
 Agents are useful. Agent handovers are usually mush.
