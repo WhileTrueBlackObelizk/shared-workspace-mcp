@@ -28,7 +28,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -707,7 +707,7 @@ async def list_tools() -> list[Tool]:
         }, ["path"]),
         tool("run_check", "Run a safe preset check, not an arbitrary shell command.", {
             "root": {"type": "string", "default": str(WATCH_PATH)},
-            "check": {"type": "string", "description": "git_status, python_compile, python_self_check, pytest, npm_test, npm_build"},
+            "check": {"type": "string", "description": "git_status, python_compile, python_self_check, pytest, npm_test, npm_build, ruff, mypy"},
             "path": {"type": "string", "default": ""},
             "timeout": {"type": "integer", "default": 60},
             "max_chars": {"type": "integer", "default": 12000},
@@ -1033,6 +1033,15 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return checked(["npm", "test"])
         if check == "npm_build":
             return checked(["npm", "run", "build"])
+        if check in ("ruff", "mypy"):
+            import importlib.util
+            if importlib.util.find_spec(check) is None:
+                return text_response(f"{check} not installed (pip install {check}); skipped")
+            if check == "ruff":
+                target = path_under_home(extra_path, root) if extra_path else root
+                return checked([sys.executable, "-m", "ruff", "check", str(target)])
+            target = path_under_home(extra_path, root) if extra_path else root / "server.py"
+            return checked([sys.executable, "-m", "mypy", str(target)])
         return text_response(f"Unknown check: {check}")
 
     if name == "pipeline_create":
@@ -1534,8 +1543,17 @@ async def handle_feedback(request):
     return HTMLResponse(feedback_page(prompt_id or f"feedback-{int(datetime.now().timestamp())}", question))
 
 
+async def handle_health(request):
+    ok = STORAGE_DIR.exists()
+    return JSONResponse(
+        {"status": "ok" if ok else "degraded", "storage": str(STORAGE_DIR), "ts": now()},
+        status_code=200 if ok else 503,
+    )
+
+
 app = Starlette(routes=[
     Route("/sse", endpoint=handle_sse),
+    Route("/health", endpoint=handle_health),
     Route("/feedback", endpoint=handle_feedback, methods=["GET", "POST"]),
     Mount("/messages/", app=sse.handle_post_message),
 ])

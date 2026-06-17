@@ -137,6 +137,7 @@ HTTP routes:
 /sse
 /messages/
 /feedback
+/health
 ```
 
 ## Security boundaries
@@ -154,7 +155,12 @@ python_self_check
 pytest
 npm_test
 npm_build
+ruff
+mypy
 ```
+
+`ruff` and `mypy` run only if installed; otherwise the preset returns a
+"not installed" message instead of failing.
 
 ## Repository standards
 
