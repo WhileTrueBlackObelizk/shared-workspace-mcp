@@ -59,30 +59,47 @@ MAX_GATE_RESULTS = 1000
 MAX_EVIDENCE = 1000
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
+# Gate policy. Cross-disciplinary, not just "industry-expected" presence checks:
+#  - Chain-of-custody / sample integrity (forensics, clinical labs) + cache
+#    invalidation (CS): evidence only counts if it POSTDATES the last relevant
+#    change. A green test from before the last edit no longer certifies the code.
+#  - Minimum Equipment List (aviation): each item is [hard] (blocks) or
+#    [advisory] (warns but lets the line run).
+#  - Four-eyes / read-back (aviation CRM) + segregation of duties (accounting):
+#    the actor advancing a gate should not be the only source of its evidence.
+#  - Pre-registration (open science): "done" (acceptance_criteria) is fixed in
+#    the plan step, before implement, so the goalposts cannot move.
+#  - Structured sign-out / surgical time-out (medicine, SBAR): a handover must
+#    state outcome, next steps, and known risks explicitly.
 GATE_POLICY = {
     "intake": [
-        "session_owner exists",
-        "active_task exists and is not '-'",
-        "recent task_start or session_start activity exists",
+        "[hard] session_owner exists",
+        "[hard] active_task exists and is not '-'",
+        "[hard] recent task_start or session_start activity exists",
     ],
     "plan": [
-        "current_plan exists",
-        "at least one goal exists",
+        "[hard] current_plan has content (>=20 chars)",
+        "[hard] at least one goal exists",
+        "[hard] acceptance_criteria pre-registered (>=20 chars)",
     ],
     "implement": [
-        "repo_status can run",
-        "there is a relevant file event or git diff",
+        "[hard] repo_status can run",
+        "[hard] relevant file event or git diff exists",
     ],
     "test": [
-        "recent successful check exists",
+        "[hard] a successful check exists AND postdates the last relevant change (freshness)",
+        "[advisory] certifying check ran under a different source than the advancing actor",
     ],
     "review": [
-        "recent file:line evidence verification passed",
+        "[hard] file:line evidence passed AND postdates the last relevant change",
+        "[advisory] evidence verified by a different source than the advancing actor (four-eyes)",
+        "[advisory] acceptance_criteria still on record to review against",
     ],
     "handover": [
-        "last_output exists",
-        "next_steps exists",
-        "recent token_log exists",
+        "[hard] last_output is substantial (>=30 chars)",
+        "[hard] next_steps is substantial (>=30 chars)",
+        "[hard] handover_notes/blockers states risks or 'none' (structured sign-out)",
+        "[advisory] recent token_log exists",
     ],
 }
 
@@ -271,7 +288,7 @@ def run_cmd_result(args: list[str], cwd: Path, timeout: int = 60, max_chars: int
     return {"args": args, "cwd": str(cwd), "exit_code": proc.returncode, "output": output, "text": text, "ts": now()}
 
 
-def append_check_run(check: str, root: Path, result: dict[str, Any]) -> dict[str, Any]:
+def append_check_run(check: str, root: Path, result: dict[str, Any], source: str = "unknown") -> dict[str, Any]:
     entries = load_check_runs()
     entry = {
         "ts": result["ts"],
@@ -280,6 +297,7 @@ def append_check_run(check: str, root: Path, result: dict[str, Any]) -> dict[str
         "exit_code": result["exit_code"],
         "passed": result["exit_code"] == 0,
         "command": result["args"],
+        "source": source,
     }
     entries.append(entry)
     save_check_runs(entries)
@@ -388,7 +406,7 @@ def parse_file_refs(text: str) -> list[dict[str, Any]]:
     return refs
 
 
-def verify_refs(text: str, root: Path, snippet: str = "") -> dict[str, Any]:
+def verify_refs(text: str, root: Path, snippet: str = "", source: str = "unknown") -> dict[str, Any]:
     refs = parse_file_refs(text)
     results = []
     for ref in refs:
@@ -404,7 +422,7 @@ def verify_refs(text: str, root: Path, snippet: str = "") -> dict[str, Any]:
                 item["snippet_ok"] = snippet in selected
         results.append(item)
     passed = bool(results) and all(r["exists"] and r["line_range_ok"] and r["snippet_ok"] for r in results)
-    return {"ts": now(), "type": "file_refs", "root": str(root), "passed": passed, "refs": results}
+    return {"ts": now(), "type": "file_refs", "root": str(root), "source": source, "passed": passed, "refs": results}
 
 
 def append_evidence(entry: dict[str, Any]) -> dict[str, Any]:
@@ -454,53 +472,129 @@ def relevant_file_event(root: Path) -> bool:
     return any(event.get("path", "").startswith(root_text) for event in load_file_events()[-50:])
 
 
-def gate_checks(step: str, root: Path) -> list[dict[str, Any]]:
+def latest_relevant_event_ts(root: Path) -> str:
+    """Timestamp of the most recent file change under root (chain-of-custody boundary)."""
+    root_text = str(root)
+    stamps = [e.get("ts", "") for e in load_file_events() if e.get("path", "").startswith(root_text)]
+    return max(stamps) if stamps else ""
+
+
+def is_fresh(entry: dict[str, Any], root: Path) -> bool:
+    """Evidence is fresh only if it postdates the last relevant change.
+
+    If nothing changed under root (no boundary), any evidence is trivially fresh.
+    ISO timestamps share one format, so lexical comparison matches chronological.
+    """
+    boundary = latest_relevant_event_ts(root)
+    return (not boundary) or (entry.get("ts", "") >= boundary)
+
+
+def gate_checks(step: str, root: Path, actor: str = "") -> list[dict[str, Any]]:
+    """Evaluate gate items. Each item carries a severity: 'hard' blocks advance,
+    'advisory' only warns. `actor` is the source trying to advance, used for the
+    four-eyes / segregation-of-duties advisories."""
     kv = load_kv()
     actions = recent_activity_actions()
     checks: list[dict[str, Any]] = []
-    add = checks.append
+
+    def add(name: str, passed: bool, detail: str, severity: str = "hard") -> None:
+        checks.append({"name": name, "passed": bool(passed), "detail": detail, "severity": severity})
+
     if step == "intake":
-        add({"name": "session_owner", "passed": bool(kv.get("session_owner")), "detail": "session_owner exists"})
+        add("session_owner", bool(kv.get("session_owner")), "session_owner exists")
         active = kv.get("active_task", {}).get("value", "")
-        add({"name": "active_task", "passed": bool(active and active != "-"), "detail": "active_task exists and is not '-'"})
-        add({"name": "session_activity", "passed": bool(actions & {"task_start", "session_start"}), "detail": "task_start/session_start activity exists"})
+        add("active_task", bool(active and active != "-"), "active_task exists and is not '-'")
+        add("session_activity", bool(actions & {"task_start", "session_start"}), "task_start/session_start activity exists")
     elif step == "plan":
         plan = kv.get("current_plan", {}).get("value", "")
-        add({"name": "current_plan", "passed": len(plan.strip()) >= 20, "detail": "current_plan has content"})
-        add({"name": "goal", "passed": bool(load_goals()), "detail": "at least one goal exists"})
+        add("current_plan", len(plan.strip()) >= 20, "current_plan has content (>=20 chars)")
+        add("goal", bool(load_goals()), "at least one goal exists")
+        # Pre-registration (open science): fix the definition of done before implement.
+        criteria = kv.get("acceptance_criteria", {}).get("value", "")
+        add("acceptance_criteria", len(criteria.strip()) >= 20, "acceptance_criteria pre-registered (>=20 chars)")
     elif step == "implement":
         status = run_cmd_result(["git", "status", "--short"], root, 10, 12000)
-        append_check_run("git_status", root, status)
-        add({"name": "repo_status", "passed": status["exit_code"] == 0, "detail": "git status can run"})
-        add({"name": "scope_evidence", "passed": bool(status["output"].strip()) or relevant_file_event(root), "detail": "git diff/status or file event exists"})
+        append_check_run("git_status", root, status, "system")
+        add("repo_status", status["exit_code"] == 0, "git status can run")
+        add("scope_evidence", bool(status["output"].strip()) or relevant_file_event(root), "git diff/status or file event exists")
     elif step == "test":
         check = recent_successful_check(root)
-        add({"name": "successful_check", "passed": bool(check), "detail": f"recent successful check: {check.get('check') if check else 'none'}"})
+        fresh = bool(check) and is_fresh(check, root)
+        if not check:
+            detail = "no successful check recorded for root"
+        elif not fresh:
+            detail = f"stale: last check ({check.get('check')} @ {check.get('ts')}) predates last change @ {latest_relevant_event_ts(root)}"
+        else:
+            detail = f"fresh successful check: {check.get('check')} @ {check.get('ts')}"
+        add("fresh_successful_check", fresh, detail)
+        if check and actor:
+            add("independent_check", check.get("source", "unknown") != actor,
+                f"check source '{check.get('source', 'unknown')}' differs from advancing actor '{actor}'", "advisory")
     elif step == "review":
         evidence = recent_verified_evidence(root)
-        add({"name": "file_line_evidence", "passed": bool(evidence), "detail": "recent verify_file_refs passed"})
+        fresh = bool(evidence) and is_fresh(evidence, root)
+        if not evidence:
+            detail = "no passing verify_file_refs evidence for root"
+        elif not fresh:
+            detail = f"stale: evidence @ {evidence.get('ts')} predates last change @ {latest_relevant_event_ts(root)}"
+        else:
+            detail = f"fresh file:line evidence @ {evidence.get('ts')}"
+        add("fresh_file_line_evidence", fresh, detail)
+        if evidence and actor:
+            add("independent_review", evidence.get("source", "unknown") != actor,
+                f"evidence source '{evidence.get('source', 'unknown')}' differs from advancing actor '{actor}'", "advisory")
+        add("acceptance_criteria_present", bool(kv.get("acceptance_criteria", {}).get("value", "").strip()),
+            "acceptance_criteria still on record to review against", "advisory")
     elif step == "handover":
-        add({"name": "last_output", "passed": bool(kv.get("last_output", {}).get("value")), "detail": "last_output exists"})
-        add({"name": "next_steps", "passed": bool(kv.get("next_steps", {}).get("value")), "detail": "next_steps exists"})
-        add({"name": "token_log", "passed": bool(load_token_log()), "detail": "token_log has entries"})
+        # Structured sign-out / surgical time-out: outcome, next steps, and risks.
+        last_output = kv.get("last_output", {}).get("value", "")
+        next_steps = kv.get("next_steps", {}).get("value", "")
+        risk = kv.get("handover_notes", {}).get("value", "") or kv.get("blockers", {}).get("value", "")
+        add("last_output", len(last_output.strip()) >= 30, "last_output is substantial (>=30 chars)")
+        add("next_steps", len(next_steps.strip()) >= 30, "next_steps is substantial (>=30 chars)")
+        add("risk_signout", bool(risk.strip()), "handover_notes/blockers states risks or 'none' (sign-out)")
+        add("token_log", bool(load_token_log()), "token_log has entries", "advisory")
     else:
         raise ValueError(f"Unknown gate step: {step}")
     return checks
 
 
-def evaluate_gate(step: str, root: Path, pipeline_id: str = "") -> dict[str, Any]:
-    checks = gate_checks(step, root)
+def evaluate_gate(step: str, root: Path, pipeline_id: str = "", actor: str = "") -> dict[str, Any]:
+    checks = gate_checks(step, root, actor)
+    hard = [c for c in checks if c.get("severity", "hard") == "hard"]
+    advisory_fails = [c for c in checks if c.get("severity") == "advisory" and not c["passed"]]
     result = {
         "ts": now(),
         "pipeline_id": pipeline_id,
         "step": step,
         "root": str(root),
-        "passed": all(item["passed"] for item in checks),
+        "actor": actor,
+        "passed": all(c["passed"] for c in hard),
         "checks": checks,
+        "advisories": [{"name": c["name"], "detail": c["detail"]} for c in advisory_fails],
         "policy": GATE_POLICY.get(step, []),
     }
     append_gate_result(result)
     return result
+
+
+def andon_log(result: dict[str, Any], source: str) -> None:
+    """Andon cord / Jidoka: a blocked gate stops the line and records the defect
+    with its root cause, so failures become lessons instead of silent retries."""
+    failed = [c for c in result["checks"] if c.get("severity", "hard") == "hard" and not c["passed"]]
+    if not failed:
+        return
+    append_learning({
+        "type": "error",
+        "source": source or "system",
+        "task": f"gate:{result['step']}",
+        "error": f"gate {result['step']} blocked: {', '.join(c['name'] for c in failed)}",
+        "cause": "; ".join(c["detail"] for c in failed),
+        "fix": "",
+        "lesson": "",
+        "severity": "high",
+        "tags": ["gate", "andon", result["step"]],
+    })
 
 
 class _Handler(FileSystemEventHandler):
@@ -617,6 +711,7 @@ async def list_tools() -> list[Tool]:
             "path": {"type": "string", "default": ""},
             "timeout": {"type": "integer", "default": 60},
             "max_chars": {"type": "integer", "default": 12000},
+            "source": {"type": "string", "default": "unknown", "description": "actor running the check (for four-eyes gates)"},
         }, ["check"]),
         tool("pipeline_create", "Create a simple task pipeline.", {
             "name": {"type": "string"},
@@ -718,6 +813,7 @@ async def list_tools() -> list[Tool]:
             "root": {"type": "string", "default": str(WATCH_PATH)},
             "text": {"type": "string"},
             "snippet": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown", "description": "actor verifying (for four-eyes gates)"},
         }, ["text"]),
         tool("check_run_history", "Show recent safe check results.", {
             "root": {"type": "string", "default": ""},
@@ -726,10 +822,11 @@ async def list_tools() -> list[Tool]:
         tool("gate_policy", "Show hardcoded pipeline gate policy.", {
             "step": {"type": "string", "default": ""},
         }),
-        tool("gate_check", "Evaluate hard gates for one pipeline step.", {
+        tool("gate_check", "Evaluate hard + advisory gates for one pipeline step.", {
             "step": {"type": "string"},
             "pipeline_id": {"type": "string", "default": ""},
             "root": {"type": "string", "default": str(WATCH_PATH)},
+            "source": {"type": "string", "default": "", "description": "advancing actor (enables four-eyes advisories)"},
         }, ["step"]),
         tool("gate_status", "Show recent gate results.", {
             "pipeline_id": {"type": "string", "default": ""},
@@ -914,9 +1011,10 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         timeout = int(arguments.get("timeout", 60))
         max_chars = int(arguments.get("max_chars", 12000))
         extra_path = arguments.get("path", "")
+        source = arguments.get("source", "unknown")
         def checked(args: list[str]) -> list[TextContent]:
             result = run_cmd_result(args, root, timeout, max_chars)
-            append_check_run(check, root, result)
+            append_check_run(check, root, result, source)
             return text_response(result["text"])
         if check == "git_status":
             return checked(["git", "status", "--short"])
@@ -1226,9 +1324,10 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     if name == "verify_file_refs":
         root = repo_root(arguments.get("root"))
-        result = verify_refs(arguments["text"], root, arguments.get("snippet", ""))
+        source = arguments.get("source", "unknown")
+        result = verify_refs(arguments["text"], root, arguments.get("snippet", ""), source)
         append_evidence(result)
-        append_log("system", "verify_file_refs", f"passed={result['passed']} refs={len(result['refs'])}")
+        append_log(source, "verify_file_refs", f"passed={result['passed']} refs={len(result['refs'])}")
         return text_response(json.dumps(result, indent=2, ensure_ascii=False))
 
     if name == "check_run_history":
@@ -1254,9 +1353,11 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     if name == "gate_check":
         root = repo_root(arguments.get("root"))
-        result = evaluate_gate(arguments["step"], root, arguments.get("pipeline_id", ""))
+        actor = arguments.get("source", "")
+        result = evaluate_gate(arguments["step"], root, arguments.get("pipeline_id", ""), actor)
         if not result["passed"]:
-            append_log("system", "blocked", f"gate {arguments['step']} failed")
+            append_log(actor or "system", "blocked", f"gate {arguments['step']} failed")
+            andon_log(result, actor or "system")
         return text_response(json.dumps(result, indent=2, ensure_ascii=False))
 
     if name == "gate_status":
@@ -1283,9 +1384,10 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         step = arguments.get("step") or pipeline.get("current_step", "")
         if not step:
             return text_response("No pending step.")
-        result = evaluate_gate(step, root, pipeline_id)
+        result = evaluate_gate(step, root, pipeline_id, arguments.get("source", ""))
         if not result["passed"]:
             append_log(arguments.get("source", "unknown"), "blocked", f"gate_advance blocked {pipeline_id}:{step}")
+            andon_log(result, arguments.get("source", "unknown"))
             return text_response(json.dumps({"advanced": False, "gate": result}, indent=2, ensure_ascii=False))
         data[pipeline_id] = update_pipeline_step(pipeline, step, "done", "gate passed")
         save_pipelines(data)
@@ -1314,7 +1416,10 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             "has_plan": bool(kv.get("current_plan", {}).get("value")),
             "has_active_task": bool(kv.get("active_task", {}).get("value") and kv.get("active_task", {}).get("value") != "-"),
             "latest_successful_check": latest_check,
+            "latest_check_fresh": bool(latest_check) and is_fresh(latest_check, root),
             "latest_verified_evidence": bool(latest_evidence),
+            "latest_evidence_fresh": bool(latest_evidence) and is_fresh(latest_evidence, root),
+            "last_change_ts": latest_relevant_event_ts(root),
             "latest_gate": latest_gate,
             "handover_ready": bool(kv.get("last_output", {}).get("value") and kv.get("next_steps", {}).get("value")),
             "recent_feedback": recent_feedback,
@@ -1330,8 +1435,12 @@ def run_self_check() -> None:
     pipeline = update_pipeline_step(pipeline, "plan", "done", "ok")
     assert pipeline["current_step"] == "test"
     assert "review" in GATE_POLICY
+    assert "acceptance_criteria" in json.dumps(GATE_POLICY)
+    # Freshness with no change boundary under a nonexistent root is trivially fresh.
+    assert is_fresh({"ts": "2999-01-01T00:00:00"}, Path("/nonexistent-root-xyz"))
     refs = verify_refs("server.py:1-5", Path(__file__).resolve().parent)
     assert refs["passed"]
+    assert refs["source"] == "unknown"
     goal = make_goal("Reach the target", "self", "done means done")
     assert goal["status"] == "active"
     lesson = {"type": "lesson", "source": "self", "lesson": "Keep checks close to behavior."}

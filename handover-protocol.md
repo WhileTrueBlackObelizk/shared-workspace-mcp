@@ -67,27 +67,34 @@ pipeline_finish pipeline_id=[id] note=[summary]
 
 Keep `current_plan` and `next_steps` human-readable even when a pipeline exists.
 
-For agent-run work, prefer gated progress:
+For agent-run work, prefer gated progress. Pass `source=` so four-eyes
+advisories can tell who is advancing:
 
 ```text
-gate_check pipeline_id=[id] step=[step] root=[repo]
-gate_advance pipeline_id=[id] root=[repo]
+gate_check pipeline_id=[id] step=[step] root=[repo] source=[agent]
+gate_advance pipeline_id=[id] root=[repo] source=[agent]
 drift_report pipeline_id=[id] root=[repo]
 ```
 
 `pipeline_update_step` is still allowed for manual correction. Agents should use
 `gate_advance` when marking a step done.
 
-Gate summary:
+Gates are evidence-graded, not presence checks. Two rules matter most:
 
-| Step | Must be backed by |
-| --- | --- |
-| `intake` | session owner, active task, recent activity |
-| `plan` | `current_plan` and at least one goal |
-| `implement` | git/file-event evidence |
-| `test` | successful `run_check` |
-| `review` | successful `verify_file_refs` |
-| `handover` | `last_output`, `next_steps`, token log |
+- **Freshness (chain of custody):** `test` and `review` evidence only counts if
+  it postdates the last relevant file change. Re-run the check / re-verify refs
+  *after* your last edit, or the gate stays red.
+- **Severity:** `[H]` hard gates block advance; `[A]` advisory gates only warn.
+  A blocked gate auto-logs a high-severity lesson (Andon).
+
+| Step | Hard `[H]` | Advisory `[A]` |
+| --- | --- | --- |
+| `intake` | session owner, active task, recent activity | — |
+| `plan` | `current_plan`, ≥1 goal, pre-registered `acceptance_criteria` | — |
+| `implement` | git/file-event evidence | — |
+| `test` | a successful `run_check` that postdates the last change | independent `source` |
+| `review` | a passing `verify_file_refs` that postdates the last change | independent verifier; `acceptance_criteria` on record |
+| `handover` | substantial `last_output` + `next_steps`, risks stated | token log |
 
 ## 5. Code workspace tools
 
