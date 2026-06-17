@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 220" role="img" aria-label="Gated pipeline: intake, plan, implement, test, review, handover">
+  <defs>
+    <linearGradient id="pbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#141d2e"/>
+    </linearGradient>
+    <radialGradient id="comet" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#5eead4" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      text { font-family: "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .flow { stroke-dasharray: 4 18; animation: march 1.1s linear infinite; }
+      @keyframes march { to { stroke-dashoffset: -22 } }
+      .comet { animation: run 6s linear infinite; }
+      @keyframes run { 0%{transform:translateX(0)} 100%{transform:translateX(960px)} }
+      .lit  { opacity: 0; animation: litk 6s ease-out infinite; }
+      .pulse{ transform-box: fill-box; transform-origin: center; opacity: 0; animation: ping 6s ease-out infinite; }
+      @keyframes litk { 0%{opacity:0} 3%{opacity:1} 14%{opacity:0} 100%{opacity:0} }
+      @keyframes ping { 0%{opacity:0;transform:scale(.7)} 3%{opacity:.7;transform:scale(1)} 16%{opacity:0;transform:scale(1.8)} 100%{opacity:0} }
+      .d0 .lit,.d0 .pulse{animation-delay:0s}    .d1 .lit,.d1 .pulse{animation-delay:1.2s}
+      .d2 .lit,.d2 .pulse{animation-delay:2.4s}  .d3 .lit,.d3 .pulse{animation-delay:3.6s}
+      .d4 .lit,.d4 .pulse{animation-delay:4.8s}  .d5 .lit,.d5 .pulse{animation-delay:6s}
+      .lbl { fill:#cbd5e1; font-size:17px; font-weight:600; text-anchor:middle; }
+      .num { fill:#e2e8f0; font-size:20px; font-weight:700; text-anchor:middle; }
+      .cap { fill:#64748b; font-size:15px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="220" rx="22" fill="url(#pbg)"/>
+
+  <!-- track -->
+  <line x1="120" y1="96" x2="1080" y2="96" stroke="#263247" stroke-width="6" stroke-linecap="round"/>
+  <line class="flow" x1="120" y1="96" x2="1080" y2="96" stroke="#34d399" stroke-width="6" stroke-linecap="round" opacity="0.55"/>
+
+  <!-- nodes -->
+  <g class="d0" transform="translate(120,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">1</text><text class="lbl" y="68">intake</text>
+  </g>
+  <g class="d1" transform="translate(312,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">2</text><text class="lbl" y="68">plan</text>
+  </g>
+  <g class="d2" transform="translate(504,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">3</text><text class="lbl" y="68">implement</text>
+  </g>
+  <g class="d3" transform="translate(696,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">4</text><text class="lbl" y="68">test</text>
+  </g>
+  <g class="d4" transform="translate(888,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">5</text><text class="lbl" y="68">review</text>
+  </g>
+  <g class="d5" transform="translate(1080,96)">
+    <circle class="pulse" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <circle r="30" fill="#1e293b" stroke="#334155" stroke-width="2"/>
+    <circle class="lit" r="30" fill="none" stroke="#34d399" stroke-width="3"/>
+    <text class="num" y="7">6</text><text class="lbl" y="68">handover</text>
+  </g>
+
+  <!-- traveling token -->
+  <g class="comet">
+    <circle cx="120" cy="96" r="16" fill="url(#comet)"/>
+    <circle cx="120" cy="96" r="6" fill="#ecfeff"/>
+  </g>
+
+  <text class="cap" x="120" y="200">fresh evidence only · hard vs advisory gates · a blocked gate writes a lesson</text>
+</svg>

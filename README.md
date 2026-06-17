@@ -1,379 +1,132 @@
-<p align="center">
-  <img src="docs/assets/hero.svg" alt="Shared Workspace MCP animated system map" width="100%">
-</p>
+<div align="center">
 
-<h1 align="center">Shared Workspace MCP</h1>
+<img src="assets/banner.svg" alt="Cairn" width="100%" />
 
-<p align="center">
-  <strong>Local-first memory, pipelines, learning, feedback, and safe code tools for AI coding agents.</strong>
-</p>
-
-<p align="center">
+<p>
   <a href="https://github.com/WhileTrueBlackObelizk/shared-workspace-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/WhileTrueBlackObelizk/shared-workspace-mcp/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/WhileTrueBlackObelizk/shared-workspace-mcp/blob/main/SECURITY.md"><img alt="Security policy" src="https://img.shields.io/badge/security-local--first-0f766e"></a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.12%2B-2563eb">
-  <img alt="No paid services" src="https://img.shields.io/badge/cost-$0-success">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="Protocol" src="https://img.shields.io/badge/protocol-MCP-5eead4">
+  <img alt="Dependencies" src="https://img.shields.io/badge/deps-stdlib--first-34d399">
+  <img alt="Cost" src="https://img.shields.io/badge/cost-%240-success">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
 
-Most agent setups lose the plot between chats. Shared Workspace MCP gives
-Cowork, Codex, and other MCP clients the same tiny operating memory:
+<b>Shared memory &amp; verified handover for AI agents.</b><br/>
+<sub>Codex and Cowork pass work back and forth without losing the thread — and can't fake "done".</sub>
 
-- what is active
-- what changed
-- what failed
-- what lesson was learned
-- what the next agent should do
+<sub><i>Cairn = the Shared Workspace MCP.</i></sub>
 
-No hosted database. No paid bot. No giant prompt ritual.
+</div>
 
-## One command
+---
 
-Windows PowerShell:
+### 🔄 The gated pipeline
 
+<div align="center"><img src="assets/pipeline.svg" alt="intake → plan → implement → test → review → handover" width="100%" /></div>
+
+<div align="center"><sub>A step is <b>done</b> only when its evidence is <b>fresh, independent, and pre-registered</b> — not because the agent says so.</sub></div>
+
+### 🏆 Earn the level
+
+<div align="center"><img src="assets/levels.svg" alt="evidence → score → level" width="100%" /></div>
+
+---
+
+### ✨ What it does
+
+| | | |
+|---|---|---|
+| 🧠 **Memory** | shared KV · activity · file events | survives restarts &amp; handovers |
+| 🤝 **Handover** | one-call prepare / takeover | Codex ⇄ Cowork, nothing dropped |
+| 🚦 **Gates** | hard vs advisory, evidence-graded | blocks self-declared "done" |
+| 🕵️ **Freshness** | chain-of-custody on evidence | a stale check is not proof |
+| 👀 **Four-eyes** | source-tracked checks | warns on self-certification |
+| 🛎️ **Andon** | blocked gate → logged lesson | failures compound into learning |
+| 🏅 **Self-score** | 0–10, evidence-based | quality trend, not vanity |
+| 🔒 **Safe** | localhost · home-scoped · preset checks | no arbitrary shell |
+
+<div align="center"><sub>🛬 aviation gates · 🔬 chain-of-custody · 🏭 Toyota andon · 🧪 pre-registration — borrowed where they beat the default.</sub></div>
+
+---
+
+<details>
+<summary><b>⚡ Setup</b> — one command</summary>
+
+<br/>
+
+**Windows (PowerShell)**
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/WhileTrueBlackObelizk/shared-workspace-mcp/main/install.ps1 | iex"
 ```
 
-Linux with systemd user services:
-
+**Linux (systemd user service)**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/WhileTrueBlackObelizk/shared-workspace-mcp/main/install.sh | bash
 ```
 
-Then connect your MCP client to:
-
+Then point your MCP client at:
 ```text
 http://localhost:8765/sse
 ```
 
-Claude Code can also spawn the server directly over stdio:
-
+Claude Code can also spawn it over stdio:
 ```bash
 claude mcp add --scope user shared-workspace -- python /path/to/shared-mcp/server.py --stdio
 ```
 
-The installers register this automatically when the `claude` command is
-available.
+On Windows the installer also wires up the Claude Desktop / Cowork config and a local extension. Restart Claude, then ask Cowork for `workspace_dump` or `gate_check`. Liveness: `GET http://localhost:8765/health`.
 
-On Windows, the installer also updates the Claude Desktop/Cowork config when it
-can find it and installs an enabled local Claude Extension wrapper for Cowork.
-Restart Claude after install, then ask Cowork to check for `workspace_dump` or
-`gate_check`.
+</details>
 
-## Why it exists
+<details>
+<summary><b>🚀 Usage</b> — the whole trick</summary>
 
-Agents are useful. Agent handovers are usually mush.
+<br/>
 
-This server makes the handover boring and inspectable. It stores just enough
-state for the next agent to continue:
+Compact state outside the prompt, pulled only when it matters:
 
 ```text
 workspace_dump
 get_recent_activity n=10
-get_file_events n=10
 learning_search query="similar failure"
-goal_status
-pipeline_next pipeline_id=...
+gate_check step=test root="C:\path\to\repo" source=cowork
+gate_advance pipeline_id=my-task root="C:\path\to\repo" source=cowork
+drift_report pipeline_id=my-task
+goal_complete goal_id=my-task        # self-scores + levels up
 ```
 
-That is the whole trick: compact state outside the prompt, pulled only when it
-matters.
+Default pipeline: `intake → plan → implement → test → review → handover`.
+Advance with `gate_advance` (not manual edits); a blocked gate writes a lesson.
 
-## What you get
+</details>
 
-| Capability | Tools |
+<details>
+<summary><b>🧰 Tools</b></summary>
+
+<br/>
+
+| Area | Tools |
 | --- | --- |
-| Shared memory | `workspace_write`, `workspace_read`, `workspace_dump` |
-| Activity log | `log_activity`, `get_recent_activity` |
-| File events | `get_file_events` |
-| Handover | `handover_prepare`, `handover_takeover` |
-| Code workspace | `repo_status`, `git_diff`, `search_code`, `read_file`, `run_check` |
-| Pipelines | `pipeline_create`, `pipeline_next`, `pipeline_update_step`, `pipeline_finish` |
-| Token tracking | `estimate_tokens`, `token_log`, `token_summary`, `context_snapshot` |
-| Learning loop | `learning_log_error`, `learning_log_lesson`, `learning_search`, `learning_recent` |
-| Goals | `goal_start`, `goal_update`, `goal_status`, `goal_complete` |
-| Feedback | `feedback_maybe`, `feedback_log`, `feedback_summary` |
-| Drift gates | `verify_file_refs`, `gate_check`, `gate_advance`, `drift_report` |
+| Memory | `workspace_write` · `workspace_read` · `workspace_dump` · `workspace_list` · `workspace_delete` |
+| Activity / files | `log_activity` · `get_recent_activity` · `get_file_events` |
+| Handover | `handover_prepare` · `handover_takeover` |
+| Code workspace | `repo_status` · `git_diff` · `search_code` · `read_file` · `run_check` (`ruff`/`mypy` too) |
+| Gates | `gate_policy` · `gate_check` · `gate_status` · `gate_advance` · `verify_file_refs` · `drift_report` |
+| Goals / pipelines | `goal_start` · `goal_update` · `goal_status` · `goal_complete` · `pipeline_create` · `pipeline_next` · `pipeline_status` · `pipeline_update_step` · `pipeline_finish` |
+| Learning | `learning_log_error` · `learning_log_lesson` · `learning_search` · `learning_recent` |
+| Tokens / feedback | `token_log` · `token_summary` · `estimate_tokens` · `context_snapshot` · `feedback_maybe` · `feedback_log` · `feedback_summary` |
 
-## The agent loop
+</details>
 
-```mermaid
-flowchart LR
-  A["Session start"] --> B["Read workspace"]
-  B --> C["Search lessons"]
-  C --> D["Start goal or pipeline"]
-  D --> E["Use safe code tools"]
-  E --> F["Run checks"]
-  F --> G["Write next steps"]
-  G --> H["Ask feedback sometimes"]
-  H --> B
-```
+<details>
+<summary><b>🔒 Security</b> &amp; <b>🏗️ Architecture</b></summary>
 
-## Safe code tools
+<br/>
 
-Use MCP tools before free-form shell access:
+- Binds `127.0.0.1` only · file paths must stay under your home · `run_check` runs fixed presets, never arbitrary shell.
+- Storage: UTF-8 JSON under `~/.claude/shared-workspace/`. No hosted DB, no paid service.
+- Deep dives: [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`handover-protocol.md`](handover-protocol.md) · [`SECURITY.md`](SECURITY.md) · agent rules in [`AGENTS.md`](AGENTS.md).
 
-```text
-repo_status
-git_diff
-search_code
-read_file
-run_check
-```
+</details>
 
-`run_check` supports fixed presets only (`ruff`/`mypy` run only if installed):
-
-```text
-git_status
-python_compile
-python_self_check
-pytest
-npm_test
-npm_build
-ruff
-mypy
-```
-
-## Semi-auto handover
-
-Use the handover tools instead of manually writing every key:
-
-```text
-handover_prepare target=codex reason="implementation" last_output="Plan ready" next_steps="1. Build it\n2. Run checks" source=cowork
-handover_takeover agent=codex
-```
-
-`handover_prepare` writes `last_output`, `next_steps`, `handover_notes`, and
-`session_owner`, then logs the handover. `handover_takeover` reads
-`workspace_dump`, `get_recent_activity 10`, and `get_file_events 10`, and warns
-if the `session_owner` points at someone else.
-
-## Learning from errors
-
-This does not mutate a model. It writes explicit local lessons you can inspect:
-
-```text
-learning_log_error task="publish" error="installer failed" cause="bad quoting" fix="parse check" lesson="Test installer syntax before push"
-learning_search query="installer"
-```
-
-Stored in:
-
-```text
-~/.claude/shared-workspace/learning.json
-```
-
-## Goals and pipelines
-
-Use a goal when the agent should optimize for an outcome:
-
-```text
-goal_start objective="Publish MCP repo" success_criteria="Repo public, installer works, docs updated" source=codex
-goal_update goal_id=publish-mcp-repo status=active note="README done" source=codex
-goal_complete goal_id=publish-mcp-repo outcome="Pushed to GitHub" source=codex
-```
-
-`goal_complete` self-scores the goal 0-10 from evidence already on record
-(pre-registered criteria, clean gates, fresh evidence, no blocked gate, user
-feedback) and adds XP / a level. It is anti-flattery: missing evidence scores 0,
-and user feedback is the anchor — no "good" rating means the score is capped
-below max, a "bad" rating subtracts. The level (`workspace_read level`) is a
-quality trend, not a reward the agent hands itself.
-
-Use a pipeline when the task has phases or handover risk:
-
-```text
-pipeline_create name="Implement auth endpoint" source=codex
-pipeline_next pipeline_id=implement-auth-endpoint
-pipeline_update_step pipeline_id=implement-auth-endpoint step=plan status=done
-pipeline_finish pipeline_id=implement-auth-endpoint note="Done and checked."
-```
-
-Default pipeline:
-
-```text
-intake -> plan -> implement -> test -> review -> handover
-```
-
-## Drift gates
-
-Pipelines can be advanced through hardcoded gates instead of trusting the agent
-to declare itself done.
-
-```text
-gate_policy
-gate_check step=review root="C:\path\to\repo" source=cowork
-gate_advance pipeline_id=implement-auth-endpoint root="C:\path\to\repo" source=cowork
-drift_report pipeline_id=implement-auth-endpoint root="C:\path\to\repo"
-```
-
-The gates are not just presence checks ("does an artifact exist?"). They borrow
-from fields outside software so they catch failures the industry-default check
-misses:
-
-- **Chain of custody / sample integrity** (forensics, clinical labs) and **cache
-  invalidation** (CS): test/review evidence only counts if it *postdates the last
-  relevant change*. A green check from before the last edit no longer certifies
-  the code.
-- **Minimum Equipment List** (aviation): each item is `[hard]` (blocks advance)
-  or `[advisory]` (warns, line keeps moving).
-- **Four-eyes / read-back** (aviation CRM) and **segregation of duties**
-  (accounting): pass `source=` so the gate can warn when the actor advancing is
-  the same one that produced the evidence (self-certification).
-- **Pre-registration** (open science): the definition of done
-  (`acceptance_criteria`) is fixed in `plan`, before `implement`, so goalposts
-  can't move.
-- **Structured sign-out / surgical time-out** (medicine, SBAR): a handover must
-  state outcome, next steps, and known risks explicitly.
-- **Andon cord / Jidoka** (Toyota): a blocked gate records a high-severity lesson
-  (`learning_log_error`) with its root cause instead of being retried silently.
-
-Gates by step (`[H]` hard / blocking, `[A]` advisory / warning):
-
-| Step | Hard gates `[H]` | Advisory `[A]` |
-| --- | --- | --- |
-| `intake` | session owner, active task, recent session/task activity | — |
-| `plan` | `current_plan` (≥20 chars), ≥1 goal, `acceptance_criteria` pre-registered (≥20 chars) | — |
-| `implement` | repo status runs; diff or file-event evidence | — |
-| `test` | a successful `run_check` that **postdates the last change** | certifying check ran under a different `source` |
-| `review` | passing `verify_file_refs` that **postdates the last change** | independent verifier; `acceptance_criteria` still on record |
-| `handover` | `last_output` (≥30 chars), `next_steps` (≥30 chars), risks stated in `handover_notes`/`blockers` | token usage logged |
-
-`drift_report` surfaces `latest_check_fresh`, `latest_evidence_fresh`, and
-`last_change_ts` so stale-evidence drift is visible at a glance.
-
-The sharpest gate is coordinate verification:
-
-```text
-verify_file_refs text="server.py:1-20 proves the server has a docstring"
-```
-
-It verifies only that `server.py:1-20` exists, and optionally that a snippet is
-really present in that range. It does not judge interpretation. That keeps the
-agent honest without pretending a script can do code review.
-
-## Clickable feedback
-
-Ask for occasional feedback:
-
-```text
-feedback_maybe source=codex topic="handover-quality" chance=0.25
-```
-
-It returns local links:
-
-```text
-[Good](http://localhost:8765/feedback?id=...&rating=good)
-[Mixed](http://localhost:8765/feedback?id=...&rating=mixed)
-[Bad](http://localhost:8765/feedback?id=...&rating=bad)
-```
-
-The browser page writes to:
-
-```text
-~/.claude/shared-workspace/feedback.json
-```
-
-## Token savings in practice
-
-A representative repo handover was measured with the built-in
-`estimate_tokens` tool. The task was: inspect the repo, understand standards,
-run checks, explain status, and write a handover.
-
-| Approach | Estimated input tokens | Difference |
-| --- | ---: | ---: |
-| Full prompt with `README`, `ARCHITECTURE`, `handover-protocol`, `AGENTS`, `SECURITY` pasted in | `4,231` | baseline |
-| MCP bootstrap prompt only | `137` | `96.8%` less |
-| MCP bootstrap plus real tool outputs | `1,042` | `75.4%` less |
-
-Measured tool output for the MCP path:
-
-```text
-workspace_dump       232 tokens
-get_recent_activity  296 tokens
-get_file_events      271 tokens
-learning_search        5 tokens
-repo_status           17 tokens
-search_code           74 tokens
-```
-
-These numbers are local estimates, not provider billing. They are useful for
-trend tracking and planning. Exact API usage should still be logged with
-`token_log` when a provider returns real `input_tokens` and `output_tokens`.
-
-## Secret safety
-
-This repo tries hard to avoid accidental credential commits:
-
-- `.gitignore` blocks env files, runtime JSON, keys, and local virtualenvs
-- `scripts/check_secrets.py` scans tracked files with stdlib only
-- `.githooks/pre-commit` runs the secret scan before commit
-- GitHub Actions runs the same scan on push and PR
-- Dependabot keeps Python and GitHub Actions dependencies fresh
-
-Run it manually:
-
-```bash
-python scripts/check_secrets.py
-```
-
-## Storage
-
-All state lives in:
-
-```text
-~/.claude/shared-workspace/
-```
-
-Files:
-
-```text
-kv.json
-activity.json
-file_events.json
-pipelines.json
-token_usage.json
-learning.json
-goals.json
-feedback.json
-check_runs.json
-gate_results.json
-evidence.json
-```
-
-## Manual start
-
-Windows:
-
-```cmd
-start.bat
-```
-
-Linux/macOS:
-
-```bash
-./start.sh
-```
-
-Claude Code stdio mode:
-
-```bash
-python server.py --stdio
-```
-
-## Checks
-
-```bash
-python scripts/check_secrets.py
-python server.py --self-check
-python scripts/test_contract.py
-```
-
-## Architecture
-
-See `ARCHITECTURE.md` for storage, tool groups, safety boundaries, and the
-change policy.
-
-## License
-
-MIT. See `LICENSE`.
+<div align="center"><sub>MIT · built stone by stone 🪨</sub></div>

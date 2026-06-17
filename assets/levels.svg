@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 210" role="img" aria-label="Evidence to score to level">
+  <defs>
+    <linearGradient id="lbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#141d2e"/>
+    </linearGradient>
+    <linearGradient id="xpg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <style>
+      text { font-family: "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .eyebrow { fill:#5eead4; font-size:17px; letter-spacing:4px; font-weight:700; }
+      .clbl { fill:#cbd5e1; font-size:16px; font-weight:600; }
+      .tick { transform-box: fill-box; transform-origin: center; opacity:0; animation: pop .5s cubic-bezier(.2,.8,.2,1) forwards; }
+      .c0{animation-delay:.4s}.c1{animation-delay:.7s}.c2{animation-delay:1.0s}.c3{animation-delay:1.3s}.c4{animation-delay:1.7s}
+      @keyframes pop { 0%{opacity:0;transform:scale(.3)} 100%{opacity:1;transform:scale(1)} }
+      .xp { transform-box: fill-box; transform-origin: left center; transform: scaleX(0); animation: grow 1.5s ease-out 1.9s forwards; }
+      @keyframes grow { to { transform: scaleX(1) } }
+      .star { transform-box: fill-box; transform-origin: center; animation: spin 9s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg) } }
+      .cap { fill:#64748b; font-size:14px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="210" rx="22" fill="url(#lbg)"/>
+  <text class="eyebrow" x="60" y="42">EVIDENCE → SCORE → LEVEL</text>
+
+  <!-- rubric chips -->
+  <g>
+    <g transform="translate(60,64)">
+      <rect width="206" height="46" rx="12" fill="#1e293b" stroke="#334155"/>
+      <circle class="tick c0" cx="26" cy="23" r="9" fill="#34d399"/><text class="clbl" x="46" y="29">criteria fixed</text>
+    </g>
+    <g transform="translate(290,64)">
+      <rect width="206" height="46" rx="12" fill="#1e293b" stroke="#334155"/>
+      <circle class="tick c1" cx="26" cy="23" r="9" fill="#34d399"/><text class="clbl" x="46" y="29">gates green</text>
+    </g>
+    <g transform="translate(520,64)">
+      <rect width="206" height="46" rx="12" fill="#1e293b" stroke="#334155"/>
+      <circle class="tick c2" cx="26" cy="23" r="9" fill="#34d399"/><text class="clbl" x="46" y="29">fresh evidence</text>
+    </g>
+    <g transform="translate(750,64)">
+      <rect width="206" height="46" rx="12" fill="#1e293b" stroke="#334155"/>
+      <circle class="tick c3" cx="26" cy="23" r="9" fill="#34d399"/><text class="clbl" x="46" y="29">no blocks</text>
+    </g>
+    <g transform="translate(980,64)">
+      <rect width="206" height="46" rx="12" fill="#1e293b" stroke="#334155"/>
+      <circle class="tick c4" cx="26" cy="23" r="9" fill="#f59e0b"/><text class="clbl" x="46" y="29">you confirm</text>
+    </g>
+  </g>
+
+  <!-- xp bar -->
+  <rect x="60" y="150" width="1080" height="16" rx="8" fill="#1e293b" stroke="#334155"/>
+  <rect class="xp" x="60" y="150" width="864" height="16" rx="8" fill="url(#xpg)"/>
+  <rect x="924" y="150" width="216" height="16" rx="8" fill="#f59e0b" opacity="0.18"/>
+  <g class="star" transform="translate(1158,158)">
+    <path d="M0,-13 L3.8,-4 L13,-4 L5.6,2 L8.5,11 L0,5.5 L-8.5,11 L-5.6,2 L-13,-4 L-3.8,-4 Z" fill="#fbbf24"/>
+  </g>
+
+  <text class="cap" x="60" y="194">anti-flattery: missing evidence scores 0 — the last 20% only unlocks when *you* confirm</text>
+</svg>
