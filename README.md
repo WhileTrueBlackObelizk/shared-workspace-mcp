@@ -42,6 +42,9 @@ activity.json
 file_events.json
 pipelines.json
 token_usage.json
+learning.json
+goals.json
+feedback.json
 ```
 
 ## Core workflow
@@ -127,6 +130,57 @@ Summarize recent usage:
 
 ```text
 token_summary n=20
+```
+
+## Learning from errors
+
+The server learns by keeping explicit, searchable lessons:
+
+```text
+learning_log_error task="publish" error="installer failed" cause="bad quoting" fix="parse check" lesson="Test installer syntax before push"
+learning_log_lesson lesson="Run MCP smoke tests after server changes" tags=["mcp", "checks"]
+learning_search query="installer"
+learning_recent n=10
+```
+
+This is not hidden model memory. It is local JSON you can inspect and edit.
+
+## Goals
+
+Use goals to keep agents outcome-focused:
+
+```text
+goal_start objective="Publish MCP repo" success_criteria="Repo public, installer works, docs updated" source=codex
+goal_update goal_id=publish-mcp-repo status=active note="README done" source=codex
+goal_complete goal_id=publish-mcp-repo outcome="Pushed to GitHub" source=codex
+```
+
+## Clickable feedback
+
+Ask for occasional user feedback:
+
+```text
+feedback_maybe source=codex topic="handover-quality" chance=0.25
+```
+
+It returns clickable local links like:
+
+```text
+[Gut](http://localhost:8765/feedback?id=...&rating=good)
+[Gemischt](http://localhost:8765/feedback?id=...&rating=mixed)
+[Schlecht](http://localhost:8765/feedback?id=...&rating=bad)
+```
+
+You can force a prompt during testing:
+
+```text
+feedback_maybe source=codex topic="smoke-test" force=true
+```
+
+Summarize feedback:
+
+```text
+feedback_summary n=20
 ```
 
 ## Manual start

@@ -11,19 +11,23 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import subprocess
 import sys
 import threading
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, quote
 
 import uvicorn
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
+from starlette.responses import HTMLResponse
 from starlette.routing import Mount, Route
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -37,10 +41,15 @@ LOG_FILE = STORAGE_DIR / "activity.json"
 FILE_EVENTS_FILE = STORAGE_DIR / "file_events.json"
 PIPELINES_FILE = STORAGE_DIR / "pipelines.json"
 TOKEN_LOG_FILE = STORAGE_DIR / "token_usage.json"
+LEARNING_FILE = STORAGE_DIR / "learning.json"
+GOALS_FILE = STORAGE_DIR / "goals.json"
+FEEDBACK_FILE = STORAGE_DIR / "feedback.json"
 WATCH_PATH = HOME / "Claude" / "Projects" / "Skills"
 MAX_LOG = 500
 MAX_FILE_EVENTS = 200
 MAX_TOKEN_LOG = 1000
+MAX_LEARNING = 1000
+MAX_FEEDBACK = 1000
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
 
@@ -109,6 +118,8 @@ def save_file_events(events: list[dict[str, str]]) -> None:
 
 
 def append_file_event(event_type: str, path: str) -> None:
+    if should_skip(Path(path)):
+        return
     with _file_lock:
         events = load_file_events()
         events.append({"ts": now(), "type": event_type, "path": path})
@@ -129,6 +140,30 @@ def load_token_log() -> list[dict[str, Any]]:
 
 def save_token_log(entries: list[dict[str, Any]]) -> None:
     _write_json(TOKEN_LOG_FILE, entries[-MAX_TOKEN_LOG:])
+
+
+def load_learning() -> list[dict[str, Any]]:
+    return _read_json(LEARNING_FILE, [])
+
+
+def save_learning(entries: list[dict[str, Any]]) -> None:
+    _write_json(LEARNING_FILE, entries[-MAX_LEARNING:])
+
+
+def load_goals() -> dict[str, Any]:
+    return _read_json(GOALS_FILE, {})
+
+
+def save_goals(data: dict[str, Any]) -> None:
+    _write_json(GOALS_FILE, data)
+
+
+def load_feedback() -> list[dict[str, Any]]:
+    return _read_json(FEEDBACK_FILE, [])
+
+
+def save_feedback(entries: list[dict[str, Any]]) -> None:
+    _write_json(FEEDBACK_FILE, entries[-MAX_FEEDBACK:])
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -182,9 +217,13 @@ def estimate_tokens(text: str) -> int:
     return max(1, round(max(words * 1.35, chars / 4)))
 
 
+def slug(value: str, fallback: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower()).strip("-") or fallback
+
+
 def make_pipeline(name: str, steps: list[str], source: str) -> dict[str, Any]:
     return {
-        "id": re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip().lower()).strip("-") or f"pipeline-{int(datetime.now().timestamp())}",
+        "id": slug(name, f"pipeline-{int(datetime.now().timestamp())}"),
         "name": name,
         "created_at": now(),
         "updated_at": now(),
@@ -211,9 +250,57 @@ def update_pipeline_step(pipeline: dict[str, Any], step: str, status: str, note:
     return pipeline
 
 
+def make_goal(objective: str, source: str, success_criteria: str = "", pipeline_id: str = "") -> dict[str, Any]:
+    return {
+        "id": slug(objective, f"goal-{int(datetime.now().timestamp())}"),
+        "objective": objective,
+        "success_criteria": success_criteria,
+        "pipeline_id": pipeline_id,
+        "status": "active",
+        "created_at": now(),
+        "updated_at": now(),
+        "by": source,
+        "history": [{"ts": now(), "source": source, "status": "active", "note": "started"}],
+    }
+
+
+def append_learning(entry: dict[str, Any]) -> dict[str, Any]:
+    entries = load_learning()
+    entry = {"ts": now(), **entry}
+    entries.append(entry)
+    save_learning(entries)
+    append_log(entry.get("source", "unknown"), f"learning_{entry.get('type', 'note')}", entry.get("lesson") or entry.get("error", ""))
+    return entry
+
+
+def record_feedback(prompt_id: str, rating: str, note: str = "", source: str = "user") -> dict[str, Any]:
+    entries = load_feedback()
+    entry = next((e for e in entries if e.get("id") == prompt_id), None)
+    if entry is None:
+        entry = {"id": prompt_id or f"feedback-{int(datetime.now().timestamp())}", "ts": now(), "source": source}
+        entries.append(entry)
+    entry.update({
+        "answered_at": now(),
+        "status": "answered",
+        "rating": rating,
+        "note": note,
+        "source": source,
+    })
+    save_feedback(entries)
+    append_log(source, "feedback", f"{entry['id']}={rating}")
+    return entry
+
+
+def feedback_url(prompt_id: str, rating: str = "") -> str:
+    base = f"http://localhost:{PORT}/feedback?id={quote(prompt_id)}"
+    return f"{base}&rating={quote(rating)}" if rating else base
+
+
 class _Handler(FileSystemEventHandler):
-    def _push(self, event_type: str, path: str) -> None:
-        append_file_event(event_type, path)
+    def _push(self, event_type: str, path: str, dest_path: str = "") -> None:
+        if should_skip(Path(path)) or (dest_path and should_skip(Path(dest_path))):
+            return
+        append_file_event(event_type, f"{path} -> {dest_path}" if dest_path else path)
 
     def on_created(self, event) -> None:
         if not event.is_directory:
@@ -229,7 +316,7 @@ class _Handler(FileSystemEventHandler):
 
     def on_moved(self, event) -> None:
         if not event.is_directory:
-            self._push("moved", f"{event.src_path} -> {event.dest_path}")
+            self._push("moved", event.src_path, event.dest_path)
 
 
 def start_watcher() -> None:
@@ -351,6 +438,63 @@ async def list_tools() -> list[Tool]:
             "next_steps": {"type": "string", "default": ""},
             "blockers": {"type": "string", "default": ""},
         }, ["summary"]),
+        tool("learning_log_error", "Record an error and the lesson learned from it.", {
+            "source": {"type": "string", "default": "unknown"},
+            "task": {"type": "string", "default": ""},
+            "error": {"type": "string"},
+            "cause": {"type": "string", "default": ""},
+            "fix": {"type": "string", "default": ""},
+            "lesson": {"type": "string", "default": ""},
+            "severity": {"type": "string", "default": "medium"},
+            "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+        }, ["error"]),
+        tool("learning_log_lesson", "Record a reusable lesson without an error.", {
+            "source": {"type": "string", "default": "unknown"},
+            "task": {"type": "string", "default": ""},
+            "lesson": {"type": "string"},
+            "trigger": {"type": "string", "default": ""},
+            "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+        }, ["lesson"]),
+        tool("learning_search", "Search recorded lessons/errors.", {
+            "query": {"type": "string"},
+            "n": {"type": "integer", "default": 10},
+        }, ["query"]),
+        tool("learning_recent", "Read recent lessons/errors.", {"n": {"type": "integer", "default": 10}}),
+        tool("goal_start", "Start a goal with success criteria and optional pipeline link.", {
+            "objective": {"type": "string"},
+            "success_criteria": {"type": "string", "default": ""},
+            "pipeline_id": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["objective"]),
+        tool("goal_update", "Append progress to a goal.", {
+            "goal_id": {"type": "string"},
+            "status": {"type": "string", "description": "active, blocked, done"},
+            "note": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["goal_id", "status"]),
+        tool("goal_status", "Show one goal or all goals.", {
+            "goal_id": {"type": "string", "default": ""},
+        }),
+        tool("goal_complete", "Complete a goal and record the outcome.", {
+            "goal_id": {"type": "string"},
+            "outcome": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": "unknown"},
+        }, ["goal_id"]),
+        tool("feedback_maybe", "Maybe ask the user for feedback with clickable local links.", {
+            "source": {"type": "string", "default": "unknown"},
+            "topic": {"type": "string", "default": "agent-session"},
+            "question": {"type": "string", "default": "War diese Agent-Antwort hilfreich?"},
+            "chance": {"type": "number", "default": 0.25},
+            "force": {"type": "boolean", "default": False},
+            "min_hours": {"type": "number", "default": 8},
+        }),
+        tool("feedback_log", "Record feedback directly without the browser page.", {
+            "source": {"type": "string", "default": "user"},
+            "topic": {"type": "string", "default": "agent-session"},
+            "rating": {"type": "string", "description": "good, mixed, bad"},
+            "note": {"type": "string", "default": ""},
+        }, ["rating"]),
+        tool("feedback_summary", "Summarize recent feedback.", {"n": {"type": "integer", "default": 20}}),
     ]
 
 
@@ -611,6 +755,177 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         append_log(source, "context_snapshot", f"{estimate_tokens(snapshot_text)} estimated tokens")
         return text_response(f"Snapshot saved. Estimated tokens: {estimate_tokens(snapshot_text)}")
 
+    if name == "learning_log_error":
+        entry = append_learning({
+            "type": "error",
+            "source": arguments.get("source", "unknown"),
+            "task": arguments.get("task", ""),
+            "error": arguments["error"],
+            "cause": arguments.get("cause", ""),
+            "fix": arguments.get("fix", ""),
+            "lesson": arguments.get("lesson", ""),
+            "severity": arguments.get("severity", "medium"),
+            "tags": arguments.get("tags", []),
+        })
+        return text_response(json.dumps(entry, indent=2, ensure_ascii=False))
+
+    if name == "learning_log_lesson":
+        entry = append_learning({
+            "type": "lesson",
+            "source": arguments.get("source", "unknown"),
+            "task": arguments.get("task", ""),
+            "lesson": arguments["lesson"],
+            "trigger": arguments.get("trigger", ""),
+            "tags": arguments.get("tags", []),
+        })
+        return text_response(json.dumps(entry, indent=2, ensure_ascii=False))
+
+    if name == "learning_search":
+        query = arguments["query"].lower()
+        entries = [
+            e for e in load_learning()
+            if query in json.dumps(e, ensure_ascii=False).lower()
+        ][-int(arguments.get("n", 10)):]
+        if not entries:
+            return text_response("No matching lessons.")
+        lines = []
+        for entry in reversed(entries):
+            label = entry.get("lesson") or entry.get("error", "")
+            lines.append(f"[{entry['ts']}] {entry.get('type')} {entry.get('task', '')}: {label}")
+        return text_response("\n".join(lines))
+
+    if name == "learning_recent":
+        entries = load_learning()[-int(arguments.get("n", 10)):]
+        if not entries:
+            return text_response("No lessons recorded.")
+        lines = []
+        for entry in reversed(entries):
+            label = entry.get("lesson") or entry.get("error", "")
+            lines.append(f"[{entry['ts']}] {entry.get('type')} {entry.get('task', '')}: {label}")
+        return text_response("\n".join(lines))
+
+    if name == "goal_start":
+        data = load_goals()
+        goal = make_goal(
+            arguments["objective"],
+            arguments.get("source", "unknown"),
+            arguments.get("success_criteria", ""),
+            arguments.get("pipeline_id", ""),
+        )
+        base_id = goal["id"]
+        suffix = 2
+        while goal["id"] in data:
+            goal["id"] = f"{base_id}-{suffix}"
+            suffix += 1
+        data[goal["id"]] = goal
+        save_goals(data)
+        append_log(arguments.get("source", "unknown"), "goal_start", goal["id"])
+        return text_response(json.dumps(goal, indent=2, ensure_ascii=False))
+
+    if name == "goal_update":
+        data = load_goals()
+        goal_id = arguments["goal_id"]
+        if goal_id not in data:
+            return text_response("Goal not found.")
+        goal = data[goal_id]
+        goal.update({"status": arguments["status"], "updated_at": now()})
+        goal.setdefault("history", []).append({
+            "ts": now(),
+            "source": arguments.get("source", "unknown"),
+            "status": arguments["status"],
+            "note": arguments.get("note", ""),
+        })
+        save_goals(data)
+        append_log(arguments.get("source", "unknown"), "goal_update", f"{goal_id}:{arguments['status']}")
+        return text_response(json.dumps(goal, indent=2, ensure_ascii=False))
+
+    if name == "goal_status":
+        data = load_goals()
+        goal_id = arguments.get("goal_id", "")
+        if goal_id:
+            return text_response(json.dumps(data.get(goal_id, {"error": "not found"}), indent=2, ensure_ascii=False))
+        return text_response(json.dumps(data, indent=2, ensure_ascii=False) if data else "No goals.")
+
+    if name == "goal_complete":
+        data = load_goals()
+        goal_id = arguments["goal_id"]
+        if goal_id not in data:
+            return text_response("Goal not found.")
+        goal = data[goal_id]
+        goal.update({"status": "done", "outcome": arguments.get("outcome", ""), "updated_at": now()})
+        goal.setdefault("history", []).append({
+            "ts": now(),
+            "source": arguments.get("source", "unknown"),
+            "status": "done",
+            "note": arguments.get("outcome", ""),
+        })
+        save_goals(data)
+        append_log(arguments.get("source", "unknown"), "goal_complete", goal_id)
+        return text_response(json.dumps(goal, indent=2, ensure_ascii=False))
+
+    if name == "feedback_maybe":
+        entries = load_feedback()
+        source = arguments.get("source", "unknown")
+        topic = arguments.get("topic", "agent-session")
+        question = arguments.get("question", "War diese Agent-Antwort hilfreich?")
+        force = bool(arguments.get("force", False))
+        chance = float(arguments.get("chance", 0.25))
+        min_hours = float(arguments.get("min_hours", 8))
+        latest_prompt = next((e for e in reversed(entries) if e.get("type") == "prompt" and e.get("topic") == topic), None)
+        cooldown_ok = True
+        if latest_prompt:
+            age_hours = (datetime.now() - datetime.fromisoformat(latest_prompt["ts"])).total_seconds() / 3600
+            cooldown_ok = age_hours >= min_hours
+        if not force and (not cooldown_ok or random.random() > chance):
+            return text_response("No feedback requested this time.")
+        prompt_id = f"feedback-{int(datetime.now().timestamp())}-{random.randint(1000, 9999)}"
+        entry = {
+            "id": prompt_id,
+            "type": "prompt",
+            "status": "pending",
+            "ts": now(),
+            "source": source,
+            "topic": topic,
+            "question": question,
+        }
+        entries.append(entry)
+        save_feedback(entries)
+        append_log(source, "feedback_prompt", prompt_id)
+        return text_response(
+            f"{question}\n\n"
+            f"[Gut]({feedback_url(prompt_id, 'good')})  "
+            f"[Gemischt]({feedback_url(prompt_id, 'mixed')})  "
+            f"[Schlecht]({feedback_url(prompt_id, 'bad')})  "
+            f"[Mehr sagen]({feedback_url(prompt_id)})"
+        )
+
+    if name == "feedback_log":
+        prompt_id = f"direct-{int(datetime.now().timestamp())}-{random.randint(1000, 9999)}"
+        entry = record_feedback(prompt_id, arguments["rating"], arguments.get("note", ""), arguments.get("source", "user"))
+        entry.update({"type": "direct", "topic": arguments.get("topic", "agent-session")})
+        entries = load_feedback()
+        for idx, existing in enumerate(entries):
+            if existing.get("id") == entry["id"]:
+                entries[idx] = entry
+                break
+        save_feedback(entries)
+        return text_response(json.dumps(entry, indent=2, ensure_ascii=False))
+
+    if name == "feedback_summary":
+        entries = [e for e in load_feedback() if e.get("rating")][-int(arguments.get("n", 20)):]
+        if not entries:
+            return text_response("No feedback recorded.")
+        counts = {"good": 0, "mixed": 0, "bad": 0}
+        for entry in entries:
+            if entry.get("rating") in counts:
+                counts[entry["rating"]] += 1
+        lines = [f"feedback={len(entries)} good={counts['good']} mixed={counts['mixed']} bad={counts['bad']}"]
+        lines += [
+            f"- {e.get('answered_at', e.get('ts'))} {e.get('rating')} {e.get('topic', '')}: {e.get('note', '')}"
+            for e in reversed(entries)
+        ]
+        return text_response("\n".join(lines))
+
     return text_response(f"Unknown tool: {name}")
 
 
@@ -619,6 +934,12 @@ def run_self_check() -> None:
     pipeline = make_pipeline("Demo Pipeline", ["plan", "test"], "self")
     pipeline = update_pipeline_step(pipeline, "plan", "done", "ok")
     assert pipeline["current_step"] == "test"
+    goal = make_goal("Reach the target", "self", "done means done")
+    assert goal["status"] == "active"
+    lesson = {"type": "lesson", "source": "self", "lesson": "Keep checks close to behavior."}
+    assert "checks" in json.dumps(lesson)
+    feedback = {"id": "self", "rating": "good", "note": "ok"}
+    assert feedback["rating"] == "good"
     assert _is_under(HOME, HOME)
     try:
         path_under_home(str(HOME.parent.parent if HOME.parent != HOME else Path("C:/")))
@@ -637,8 +958,73 @@ async def handle_sse(request):
         await server.run(streams[0], streams[1], server.create_initialization_options())
 
 
+def feedback_page(prompt_id: str, question: str, message: str = "") -> str:
+    safe_id = escape(prompt_id)
+    safe_question = escape(question or "War diese Agent-Antwort hilfreich?")
+    safe_message = f"<p class='message'>{escape(message)}</p>" if message else ""
+    return f"""<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shared Workspace MCP Feedback</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; max-width: 720px; margin: 48px auto; padding: 0 20px; line-height: 1.5; }}
+    .buttons {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }}
+    a, button {{ border: 1px solid #222; border-radius: 6px; padding: 10px 14px; color: #111; background: #fff; text-decoration: none; cursor: pointer; }}
+    textarea {{ width: 100%; min-height: 110px; margin: 12px 0; }}
+    .message {{ background: #eef7ee; border: 1px solid #bfd8bf; padding: 10px 12px; border-radius: 6px; }}
+  </style>
+</head>
+<body>
+  <h1>Feedback</h1>
+  {safe_message}
+  <p>{safe_question}</p>
+  <div class="buttons">
+    <a href="/feedback?id={quote(prompt_id)}&rating=good">Gut</a>
+    <a href="/feedback?id={quote(prompt_id)}&rating=mixed">Gemischt</a>
+    <a href="/feedback?id={quote(prompt_id)}&rating=bad">Schlecht</a>
+  </div>
+  <form method="post" action="/feedback">
+    <input type="hidden" name="id" value="{safe_id}">
+    <label for="rating">Bewertung</label>
+    <select id="rating" name="rating">
+      <option value="good">Gut</option>
+      <option value="mixed">Gemischt</option>
+      <option value="bad">Schlecht</option>
+    </select>
+    <label for="note"><br>Was war gut oder schlecht?</label>
+    <textarea id="note" name="note"></textarea>
+    <button type="submit">Feedback speichern</button>
+  </form>
+</body>
+</html>"""
+
+
+async def handle_feedback(request):
+    if request.method == "POST":
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        params = {k: v[0] for k, v in parse_qs(raw).items()}
+    else:
+        params = dict(request.query_params)
+
+    prompt_id = params.get("id", "")
+    rating = params.get("rating", "")
+    note = params.get("note", "")
+    entries = load_feedback()
+    prompt = next((e for e in entries if e.get("id") == prompt_id), {})
+    question = prompt.get("question", "War diese Agent-Antwort hilfreich?")
+
+    if prompt_id and rating:
+        record_feedback(prompt_id, rating, note)
+        return HTMLResponse(feedback_page(prompt_id, question, "Danke, Feedback gespeichert."))
+
+    return HTMLResponse(feedback_page(prompt_id or f"feedback-{int(datetime.now().timestamp())}", question))
+
+
 app = Starlette(routes=[
     Route("/sse", endpoint=handle_sse),
+    Route("/feedback", endpoint=handle_feedback, methods=["GET", "POST"]),
     Mount("/messages/", app=sse.handle_post_message),
 ])
 

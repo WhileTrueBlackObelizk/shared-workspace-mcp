@@ -20,6 +20,9 @@ workspace coordination.
 | `file_events.json` | Persisted file watcher ring buffer |
 | `pipelines.json` | Simple pipeline state |
 | `token_usage.json` | Exact or estimated token usage log |
+| `learning.json` | Errors, causes, fixes, and reusable lessons |
+| `goals.json` | Goal state and progress history |
+| `feedback.json` | Feedback prompts and user ratings |
 
 Writes are atomic: data is written to a temporary JSON file, then replaced.
 
@@ -72,11 +75,46 @@ token_summary
 context_snapshot
 ```
 
+Learning:
+
+```text
+learning_log_error
+learning_log_lesson
+learning_search
+learning_recent
+```
+
+Goals:
+
+```text
+goal_start
+goal_update
+goal_status
+goal_complete
+```
+
+Feedback:
+
+```text
+feedback_maybe
+feedback_log
+feedback_summary
+```
+
+HTTP routes:
+
+```text
+/sse
+/messages/
+/feedback
+```
+
 ## Security boundaries
 
 - Server binds to `127.0.0.1`, not a public interface.
 - File paths must stay under the user's home directory.
 - `run_check` does not run arbitrary shell commands.
+- Feedback links are local-only and write to `feedback.json`.
 - Supported checks are fixed presets:
 
 ```text
@@ -105,6 +143,20 @@ When provider usage is available, callers should log exact values with
 
 When exact usage is unavailable, `estimate_tokens` uses a rough local estimate.
 It is good enough for trends, not billing.
+
+## Learning loop
+
+The MCP does not "learn" by changing model weights. It learns operationally:
+
+1. Record errors with `learning_log_error`.
+2. Record reusable lessons with `learning_log_lesson`.
+3. Search prior lessons before similar work with `learning_search`.
+4. Keep goal state in `goals.json` so agents can orient around outcomes, not
+   just steps.
+5. Ask for occasional user feedback with `feedback_maybe`; the returned local
+   URL records clickable feedback in `feedback.json`.
+
+This keeps learning inspectable, editable, and portable.
 
 ## Change policy
 

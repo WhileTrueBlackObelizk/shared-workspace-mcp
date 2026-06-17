@@ -119,7 +119,33 @@ estimate_tokens text=[text]
 token_log task=[task] agent=[agent] text=[representative context]
 ```
 
-## 7. Handover flows
+## 7. Goals, learning, and feedback
+
+For outcome-heavy tasks, start a goal before implementation:
+
+```text
+goal_start objective=[goal] success_criteria=[done means] source=[cowork|codex]
+goal_update goal_id=[id] status=[active|blocked|done] note=[short progress]
+goal_complete goal_id=[id] outcome=[result]
+```
+
+When something fails, log the reusable lesson:
+
+```text
+learning_log_error task=[task] error=[what failed] cause=[why] fix=[what fixed it] lesson=[reuse next time]
+learning_search query=[similar problem]
+```
+
+Occasionally ask for feedback, especially after handovers or confusing work:
+
+```text
+feedback_maybe source=[cowork|codex] topic=[handover-quality] chance=0.25
+feedback_summary n=20
+```
+
+The feedback prompt returns local clickable links backed by `feedback.json`.
+
+## 8. Handover flows
 
 Cowork to Codex:
 
@@ -143,7 +169,7 @@ workspace_write session_owner cowork source=codex
 log_activity source=codex action=handover detail="to cowork: [task]"
 ```
 
-## 8. Cleanup
+## 9. Cleanup
 
 After a task is really complete:
 
