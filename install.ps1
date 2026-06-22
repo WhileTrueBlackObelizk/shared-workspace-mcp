@@ -61,24 +61,43 @@ function Update-ClaudeDesktopConfig {
   return $true
 }
 
-function Install-ClaudeCoworkExtension {
+function Remove-ClaudeCoworkExtension {
   param(
-    [Parameter(Mandatory = $true)] [string] $ClaudeRoot,
-    [Parameter(Mandatory = $true)] [string] $InstallDir,
-    [Parameter(Mandatory = $true)] [string] $PythonPath,
-    [Parameter(Mandatory = $true)] [string] $ServerPath
+    [Parameter(Mandatory = $true)] [string] $ClaudeRoot
   )
 
   if (-not (Test-Path $ClaudeRoot)) {
     return $false
   }
 
-  $script = Join-Path $InstallDir "scripts\install_claude_extension.py"
-  & $PythonPath $script `
-    --claude-root $ClaudeRoot `
-    --python $PythonPath `
-    --server $ServerPath | Out-Null
-  return $true
+  $extensionId = "ant.dir.whiletrueblackobelizk.shared-workspace-mcp"
+  $changed = $false
+
+  $installationsPath = Join-Path $ClaudeRoot "extensions-installations.json"
+  if (Test-Path $installationsPath) {
+    try {
+      $installations = Get-Content -LiteralPath $installationsPath -Raw | ConvertFrom-Json
+      $extensions = $installations.PSObject.Properties["extensions"].Value
+      if ($extensions -is [pscustomobject] -and $extensions.PSObject.Properties[$extensionId]) {
+        Copy-Item -LiteralPath $installationsPath -Destination "$installationsPath.bak-shared-workspace-$(Get-Date -Format yyyyMMddHHmmss)"
+        $extensions.PSObject.Properties.Remove($extensionId)
+        $installations | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $installationsPath -Encoding utf8
+        $changed = $true
+      }
+    } catch {
+      Write-Warning "Skipped invalid Claude extension registry: $installationsPath"
+    }
+  }
+
+  $extensionDir = Join-Path $ClaudeRoot "Claude Extensions\$extensionId"
+  if (Test-Path $extensionDir) {
+    $backupRoot = Join-Path $ClaudeRoot "Claude Extensions.disabled-backup"
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+    Move-Item -LiteralPath $extensionDir -Destination (Join-Path $backupRoot "$extensionId-$(Get-Date -Format yyyyMMddHHmmss)")
+    $changed = $true
+  }
+
+  return $changed
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -134,10 +153,10 @@ if ($env:LOCALAPPDATA) {
   }
 }
 
-$coworkExtensionsUpdated = 0
+$coworkExtensionsRemoved = 0
 foreach ($root in ($coworkRoots | Sort-Object -Unique)) {
-  if (Install-ClaudeCoworkExtension -ClaudeRoot $root -InstallDir $installDir -PythonPath $pythonPath -ServerPath $serverPath) {
-    $coworkExtensionsUpdated++
+  if (Remove-ClaudeCoworkExtension -ClaudeRoot $root) {
+    $coworkExtensionsRemoved++
   }
 }
 
@@ -158,7 +177,7 @@ Write-Host "Shared Workspace MCP installed."
 if ($desktopConfigsUpdated -gt 0) {
   Write-Host "Claude Desktop/Cowork config updated. Restart Claude to load the MCP tools."
 }
-if ($coworkExtensionsUpdated -gt 0) {
-  Write-Host "Claude Desktop/Cowork extension installed. Restart Claude to load the MCP tools."
+if ($coworkExtensionsRemoved -gt 0) {
+  Write-Host "Removed duplicate Claude Desktop/Cowork extension registration. Restart Claude to unload old MCP processes."
 }
 Write-Host "URL: http://localhost:8765/sse"

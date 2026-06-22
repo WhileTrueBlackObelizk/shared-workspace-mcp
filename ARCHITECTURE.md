@@ -13,9 +13,8 @@ handover and code workspace coordination.
   is installed.
 - Windows installer also writes the same stdio server into detected Claude
   Desktop/Cowork `claude_desktop_config.json` files.
-- Windows installer also installs a minimal enabled Claude Extension wrapper in
-  detected Claude Desktop/Cowork roots because local-agent Cowork loads dynamic
-  extension MCP servers.
+- Windows installer removes the older duplicate local Claude Extension wrapper
+  if it is present, so Desktop/Cowork does not spawn the same MCP twice.
 - Host: `127.0.0.1`
 - Entry point: `server.py`
 - Storage: UTF-8 JSON under `~/.claude/shared-workspace/`
@@ -37,7 +36,10 @@ handover and code workspace coordination.
 | `gate_results.json` | Gate evaluations and pass/fail state |
 | `evidence.json` | Verified evidence such as file:line checks |
 
-Writes are atomic: data is written to a temporary JSON file, then replaced.
+Writes are protected by a local interprocess lock. Data is written to a
+process-unique temporary JSON file, then replaced atomically. Multiple stdio
+clients can run at the same time without corrupting shared JSON or colliding on
+the same `.tmp` file.
 
 ## Tool groups
 

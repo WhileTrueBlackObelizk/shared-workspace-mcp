@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 
@@ -94,9 +98,30 @@ def main() -> int:
 
     check_gate_policy(module)
     check_self_score(module)
+    check_concurrent_json_writes()
 
     print("contract tests OK")
     return 0
+
+
+def check_concurrent_json_writes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "events.json"
+        code = f"""
+import importlib.util, pathlib
+spec = importlib.util.spec_from_file_location('shared_workspace_server', {str(SERVER_PATH)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+path = pathlib.Path({str(target)!r})
+for i in range(20):
+    module._update_json(path, [], lambda data, i=i: data.append(i))
+"""
+        procs = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(8)]
+        for proc in procs:
+            assert proc.wait(timeout=20) == 0
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert len(data) == 160, len(data)
+        assert not list(Path(tmp).glob("*.tmp")), "temporary write files should be cleaned up"
 
 
 def check_self_score(module) -> None:
@@ -156,10 +181,12 @@ def check_gate_policy(module) -> None:
     module.load_token_log = lambda: list(gstore["tokens"])
     module.load_learning = lambda: list(gstore["learning"])
     module.save_learning = lambda e: gstore.__setitem__("learning", e)
+    module.append_learning = lambda entry: gstore["learning"].append({"ts": module.now(), **entry}) or {"ts": module.now(), **entry}
     module.load_log = lambda: list(gstore["log"])
     module.save_log = lambda e: gstore.__setitem__("log", e)
     module.load_gate_results = lambda: list(gstore["gate_results"])
     module.save_gate_results = lambda e: gstore.__setitem__("gate_results", e)
+    module.append_gate_result = lambda entry: gstore["gate_results"].append(entry) or entry
 
     # --- plan gate requires pre-registered acceptance_criteria ---
     gstore["kv"] = {"current_plan": {"value": "Enforce real gates with fresh evidence everywhere."}}
