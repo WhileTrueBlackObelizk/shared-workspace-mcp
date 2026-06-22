@@ -74,7 +74,7 @@ Claude Code can also spawn it over stdio:
 claude mcp add --scope user shared-workspace -- python /path/to/shared-mcp/server.py --stdio
 ```
 
-On Windows the installer also wires up the Claude Desktop / Cowork config and a local extension. Restart Claude, then ask Cowork for `workspace_dump` or `gate_check`. Liveness: `GET http://localhost:8765/health`.
+On Windows the installer wires up the Claude Desktop / Cowork config and removes the older duplicate local extension if present. Restart Claude, then ask Cowork for `workspace_dump` or `gate_check`. Liveness: `GET http://localhost:8765/health`.
 
 </details>
 

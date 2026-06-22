@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import subprocess
 import sys
 import threading
+import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -37,6 +41,7 @@ from watchdog.observers import Observer
 PORT = 8765
 HOME = Path.home().resolve()
 STORAGE_DIR = HOME / ".claude" / "shared-workspace"
+STORAGE_LOCK_FILE = STORAGE_DIR / ".storage.lock"
 KV_FILE = STORAGE_DIR / "kv.json"
 LOG_FILE = STORAGE_DIR / "activity.json"
 FILE_EVENTS_FILE = STORAGE_DIR / "file_events.json"
@@ -107,7 +112,7 @@ GATE_POLICY = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-_file_lock = threading.Lock()
+_file_lock = threading.RLock()
 
 
 def now() -> str:
@@ -118,8 +123,43 @@ def _ensure() -> None:
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _read_json(path: Path, default: Any) -> Any:
+@contextmanager
+def _storage_lock(timeout: float = 10.0):
     _ensure()
+    with _file_lock:
+        with STORAGE_LOCK_FILE.open("a+b") as lock:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        lock.seek(0)
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out waiting for storage lock: {STORAGE_LOCK_FILE}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _read_json_unlocked(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     try:
@@ -131,11 +171,32 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _write_json_unlocked(path: Path, data: Any) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    with _storage_lock():
+        return _read_json_unlocked(path, default)
+
+
 def _write_json(path: Path, data: Any) -> None:
-    _ensure()
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    with _storage_lock():
+        _write_json_unlocked(path, data)
+
+
+def _update_json(path: Path, default: Any, update) -> Any:
+    with _storage_lock():
+        data = _read_json_unlocked(path, default)
+        result = update(data)
+        _write_json_unlocked(path, data)
+        return result
 
 
 def load_kv() -> dict[str, Any]:
@@ -155,9 +216,14 @@ def save_log(entries: list[dict[str, Any]]) -> None:
 
 
 def append_log(source: str, action: str, detail: str = "") -> None:
-    entries = load_log()
-    entries.append({"ts": now(), "source": source, "action": action, "detail": detail})
-    save_log(entries)
+    def update(entries):
+        entries.append({"ts": now(), "source": source, "action": action, "detail": detail})
+        del entries[:-MAX_LOG]
+
+    try:
+        _update_json(LOG_FILE, [], update)
+    except OSError as exc:
+        logger.warning("Could not append activity log: %s", exc)
 
 
 def load_file_events() -> list[dict[str, str]]:
@@ -171,10 +237,14 @@ def save_file_events(events: list[dict[str, str]]) -> None:
 def append_file_event(event_type: str, path: str) -> None:
     if should_skip(Path(path)):
         return
-    with _file_lock:
-        events = load_file_events()
+    def update(events):
         events.append({"ts": now(), "type": event_type, "path": path})
-        save_file_events(events)
+        del events[:-MAX_FILE_EVENTS]
+
+    try:
+        _update_json(FILE_EVENTS_FILE, [], update)
+    except OSError as exc:
+        logger.warning("Could not append file event: %s", exc)
 
 
 def load_pipelines() -> dict[str, Any]:
@@ -290,7 +360,6 @@ def run_cmd_result(args: list[str], cwd: Path, timeout: int = 60, max_chars: int
 
 
 def append_check_run(check: str, root: Path, result: dict[str, Any], source: str = "unknown") -> dict[str, Any]:
-    entries = load_check_runs()
     entry = {
         "ts": result["ts"],
         "check": check,
@@ -300,8 +369,11 @@ def append_check_run(check: str, root: Path, result: dict[str, Any], source: str
         "command": result["args"],
         "source": source,
     }
-    entries.append(entry)
-    save_check_runs(entries)
+    def update(entries):
+        entries.append(entry)
+        del entries[:-MAX_CHECK_RUNS]
+
+    _update_json(CHECK_RUNS_FILE, [], update)
     return entry
 
 
@@ -362,28 +434,33 @@ def make_goal(objective: str, source: str, success_criteria: str = "", pipeline_
 
 
 def append_learning(entry: dict[str, Any]) -> dict[str, Any]:
-    entries = load_learning()
     entry = {"ts": now(), **entry}
-    entries.append(entry)
-    save_learning(entries)
+    def update(entries):
+        entries.append(entry)
+        del entries[:-MAX_LEARNING]
+
+    _update_json(LEARNING_FILE, [], update)
     append_log(entry.get("source", "unknown"), f"learning_{entry.get('type', 'note')}", entry.get("lesson") or entry.get("error", ""))
     return entry
 
 
 def record_feedback(prompt_id: str, rating: str, note: str = "", source: str = "user") -> dict[str, Any]:
-    entries = load_feedback()
-    entry = next((e for e in entries if e.get("id") == prompt_id), None)
-    if entry is None:
-        entry = {"id": prompt_id or f"feedback-{int(datetime.now().timestamp())}", "ts": now(), "source": source}
-        entries.append(entry)
-    entry.update({
-        "answered_at": now(),
-        "status": "answered",
-        "rating": rating,
-        "note": note,
-        "source": source,
-    })
-    save_feedback(entries)
+    def update(entries):
+        entry = next((e for e in entries if e.get("id") == prompt_id), None)
+        if entry is None:
+            entry = {"id": prompt_id or f"feedback-{int(datetime.now().timestamp())}", "ts": now(), "source": source}
+            entries.append(entry)
+        entry.update({
+            "answered_at": now(),
+            "status": "answered",
+            "rating": rating,
+            "note": note,
+            "source": source,
+        })
+        del entries[:-MAX_FEEDBACK]
+        return entry
+
+    entry = _update_json(FEEDBACK_FILE, [], update)
     append_log(source, "feedback", f"{entry['id']}={rating}")
     return entry
 
@@ -427,16 +504,20 @@ def verify_refs(text: str, root: Path, snippet: str = "", source: str = "unknown
 
 
 def append_evidence(entry: dict[str, Any]) -> dict[str, Any]:
-    entries = load_evidence()
-    entries.append(entry)
-    save_evidence(entries)
+    def update(entries):
+        entries.append(entry)
+        del entries[:-MAX_EVIDENCE]
+
+    _update_json(EVIDENCE_FILE, [], update)
     return entry
 
 
 def append_gate_result(entry: dict[str, Any]) -> dict[str, Any]:
-    entries = load_gate_results()
-    entries.append(entry)
-    save_gate_results(entries)
+    def update(entries):
+        entries.append(entry)
+        del entries[:-MAX_GATE_RESULTS]
+
+    _update_json(GATE_RESULTS_FILE, [], update)
     return entry
 
 
