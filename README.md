@@ -87,6 +87,8 @@ Compact state outside the prompt, pulled only when it matters:
 
 ```text
 workspace_dump
+workspace_audit
+workspace_maintain
 get_recent_activity n=10
 learning_search query="similar failure"
 gate_check step=test root="C:\path\to\repo" source=cowork
@@ -108,6 +110,7 @@ Advance with `gate_advance` (not manual edits); a blocked gate writes a lesson.
 | Area | Tools |
 | --- | --- |
 | Memory | `workspace_write` · `workspace_read` · `workspace_dump` · `workspace_list` · `workspace_delete` |
+| Maintenance | `workspace_audit` · `workspace_maintain` |
 | Activity / files | `log_activity` · `get_recent_activity` · `get_file_events` |
 | Handover | `handover_prepare` · `handover_takeover` |
 | Code workspace | `repo_status` · `git_diff` · `search_code` · `read_file` · `run_check` (`ruff`/`mypy` too) |

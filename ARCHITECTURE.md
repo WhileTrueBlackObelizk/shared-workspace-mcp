@@ -61,6 +61,22 @@ get_recent_activity
 get_file_events
 ```
 
+Workspace maintenance:
+
+```text
+workspace_audit
+workspace_maintain
+```
+
+`handover_takeover` runs safe maintenance automatically before returning
+context. The maintenance pass:
+
+- updates the small `workspace_health` key,
+- removes stale `*.tmp` files older than 10 minutes,
+- logs `workspace_maintenance_needed` when the hot dump is too large,
+  one hot key is too long, `current_plan` is stale, or active context and plan
+  appear to describe different projects.
+
 Handover:
 
 ```text
