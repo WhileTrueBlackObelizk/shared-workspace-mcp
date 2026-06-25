@@ -79,6 +79,39 @@ On Windows the installer wires up the Claude Desktop / Cowork config and removes
 </details>
 
 <details>
+<summary><b>Data hygiene</b> - local memory, public code</summary>
+
+<br/>
+
+The repository contains the MCP server and installer only. Your actual agent
+memory is local runtime data under:
+
+```text
+~/.claude/shared-workspace/
+```
+
+That directory is not part of this repo and should not be committed. It may
+contain project names, handovers, file paths, decisions, and logs from your
+machine.
+
+The hot workspace should stay small:
+
+```text
+active_task
+context
+last_output
+next_steps
+blockers
+handover_notes
+workspace_health
+```
+
+Long project notes belong in project files, docs, or namespaced project keys;
+the hot `workspace_dump` is for the next action, not for full history.
+
+</details>
+
+<details>
 <summary><b>🚀 Usage</b> — the whole trick</summary>
 
 <br/>
@@ -99,6 +132,32 @@ goal_complete goal_id=my-task        # self-scores + levels up
 
 Default pipeline: `intake → plan → implement → test → review → handover`.
 Advance with `gate_advance` (not manual edits); a blocked gate writes a lesson.
+
+</details>
+
+<details>
+<summary><b>Maintenance guards</b></summary>
+
+<br/>
+
+`handover_takeover` runs safe maintenance before it returns context. It does not
+delete project knowledge. It only removes stale temporary JSON files and writes a
+small `workspace_health` key.
+
+It reports attention when:
+
+```text
+workspace_dump is too large
+one hot key is too long
+active context and current_plan mention different projects
+current_plan is stale
+old temporary files exist
+many completed pipelines remain in the live store
+more than one goal is active
+```
+
+Use `workspace_audit` to inspect the full report and `workspace_maintain` to run
+the same safe cleanup manually.
 
 </details>
 
