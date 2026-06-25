@@ -35,6 +35,8 @@ def main() -> int:
     names = asyncio.run(tool_names(module))
     expected = {
         "workspace_write",
+        "workspace_audit",
+        "workspace_maintain",
         "handover_prepare",
         "handover_takeover",
         "repo_status",
@@ -80,6 +82,11 @@ def main() -> int:
     module.load_log = lambda: list(store["log"])
     module.save_log = lambda entries: store.__setitem__("log", entries)
     module.load_file_events = lambda: list(store["events"])
+    module.maintain_workspace = lambda source="system", cleanup_tmp=True: {
+        "audit": {"status": "ok", "issues": []},
+        "cleaned_tmp": [],
+        "workspace_health": "status=ok",
+    }
 
     module._call_tool("handover_prepare", {
         "target": "cowork",
@@ -92,6 +99,7 @@ def main() -> int:
     assert store["kv"]["last_output"]["value"] == "implemented handover tools"
     takeover = module._call_tool("handover_takeover", {"agent": "cowork"})[0].text
     assert "Owner OK." in takeover
+    assert "## workspace_maintenance" in takeover
     assert "## workspace_dump" in takeover
     assert "get_recent_activity" in takeover
     assert "get_file_events" in takeover

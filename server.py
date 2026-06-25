@@ -62,6 +62,10 @@ MAX_FEEDBACK = 1000
 MAX_CHECK_RUNS = 1000
 MAX_GATE_RESULTS = 1000
 MAX_EVIDENCE = 1000
+HOT_DUMP_WARN_CHARS = 8000
+HOT_KEY_WARN_CHARS = 1500
+STALE_PLAN_HOURS = 24
+STALE_TMP_MINUTES = 10
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
 LEVEL_STEP = 50  # XP per level
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
@@ -309,6 +313,181 @@ def load_evidence() -> list[dict[str, Any]]:
 
 def save_evidence(entries: list[dict[str, Any]]) -> None:
     _write_json(EVIDENCE_FILE, entries[-MAX_EVIDENCE:])
+
+
+def parse_ts(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def workspace_dump_text(kv: dict[str, Any]) -> str:
+    if not kv:
+        return "Workspace is empty."
+    return "\n\n".join(f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items())
+
+
+def project_mentions(text: str) -> set[str]:
+    lowered = text.lower()
+    labels = {
+        "parkify": ("parkify", "stripe", "reservation", "airbnb"),
+        "fiae": ("fiae", "tagesbericht", "ihk", "ap2"),
+        "mcp": ("shared-workspace", "cairn", "mcp", "gate policy"),
+    }
+    return {name for name, needles in labels.items() if any(needle in lowered for needle in needles)}
+
+
+def audit_workspace() -> dict[str, Any]:
+    kv = load_kv()
+    dump = workspace_dump_text(kv)
+    issues: list[dict[str, Any]] = []
+    actions: list[str] = []
+    key_sizes = {
+        key: len(str(entry.get("value", "")))
+        for key, entry in kv.items()
+    }
+
+    if len(dump) > HOT_DUMP_WARN_CHARS:
+        issues.append({
+            "guard": "hot_size_guard",
+            "severity": "warn",
+            "detail": f"workspace_dump is {len(dump)} chars; target <= {HOT_DUMP_WARN_CHARS}",
+        })
+        actions.append("Move long project notes to project:* keys or source files; keep HOT keys short.")
+
+    large_keys = {key: size for key, size in key_sizes.items() if size > HOT_KEY_WARN_CHARS}
+    if large_keys:
+        issues.append({
+            "guard": "hot_key_guard",
+            "severity": "warn",
+            "detail": f"large HOT keys: {large_keys}",
+        })
+        actions.append("Replace large HOT key values with summary + file/key pointer.")
+
+    active_blob = " ".join(str(kv.get(k, {}).get("value", "")) for k in ("active_task", "context", "last_output", "next_steps"))
+    active_projects = project_mentions(active_blob)
+    plan_projects = project_mentions(str(kv.get("current_plan", {}).get("value", "")))
+    if active_projects and plan_projects and active_projects.isdisjoint(plan_projects):
+        issues.append({
+            "guard": "project_drift_guard",
+            "severity": "warn",
+            "detail": f"active context mentions {sorted(active_projects)}, current_plan mentions {sorted(plan_projects)}",
+        })
+        actions.append("Refresh current_plan for the active project or move the old plan to project history.")
+
+    active_ts = parse_ts(kv.get("active_task", {}).get("updated_at", ""))
+    plan_ts = parse_ts(kv.get("current_plan", {}).get("updated_at", ""))
+    if active_ts and plan_ts and active_ts > plan_ts:
+        age_hours = (active_ts - plan_ts).total_seconds() / 3600
+        if age_hours > STALE_PLAN_HOURS:
+            issues.append({
+                "guard": "stale_plan_guard",
+                "severity": "warn",
+                "detail": f"current_plan is {age_hours:.1f}h older than active_task",
+            })
+            actions.append("Update current_plan or clear it if the active task is already paused/handed over.")
+
+    tmp_files = stale_tmp_files()
+    if tmp_files:
+        issues.append({
+            "guard": "tmp_cleanup_guard",
+            "severity": "actionable",
+            "detail": f"{len(tmp_files)} stale temp files older than {STALE_TMP_MINUTES} minutes",
+        })
+        actions.append("Run workspace_maintain to remove stale temp files.")
+
+    pipelines = load_pipelines()
+    done_pipelines = [pid for pid, item in pipelines.items() if item.get("status") == "done"]
+    if len(done_pipelines) > 10:
+        issues.append({
+            "guard": "completed_pipeline_guard",
+            "severity": "info",
+            "detail": f"{len(done_pipelines)} completed pipelines in hot pipeline store",
+        })
+        actions.append("Archive old completed pipelines once archive semantics are agreed.")
+
+    goals = load_goals()
+    active_goals = [gid for gid, item in goals.items() if item.get("status") == "active"]
+    if len(active_goals) > 1:
+        issues.append({
+            "guard": "active_goal_guard",
+            "severity": "info",
+            "detail": f"{len(active_goals)} active goals: {active_goals}",
+        })
+        actions.append("Mark paused/waiting-review goals explicitly so agents do not treat all as current.")
+
+    return {
+        "ts": now(),
+        "limits": {
+            "hot_dump_warn_chars": HOT_DUMP_WARN_CHARS,
+            "hot_key_warn_chars": HOT_KEY_WARN_CHARS,
+            "stale_plan_hours": STALE_PLAN_HOURS,
+            "stale_tmp_minutes": STALE_TMP_MINUTES,
+        },
+        "summary": {
+            "kv_keys": len(kv),
+            "dump_chars": len(dump),
+            "large_keys": large_keys,
+            "active_projects": sorted(active_projects),
+            "plan_projects": sorted(plan_projects),
+            "activity_entries": len(load_log()),
+            "file_events": len(load_file_events()),
+            "pipelines": len(pipelines),
+            "done_pipelines": len(done_pipelines),
+            "goals": len(goals),
+            "active_goals": len(active_goals),
+        },
+        "issues": issues,
+        "recommended_actions": list(dict.fromkeys(actions)),
+        "status": "attention" if issues else "ok",
+    }
+
+
+def stale_tmp_files() -> list[Path]:
+    _ensure()
+    cutoff = datetime.now().timestamp() - STALE_TMP_MINUTES * 60
+    return [
+        path for path in STORAGE_DIR.glob("*.tmp")
+        if path.is_file() and path.stat().st_mtime < cutoff
+    ]
+
+
+def workspace_health_text(audit: dict[str, Any], cleaned_tmp: int = 0) -> str:
+    return (
+        f"status={audit['status']}; "
+        f"issues={len(audit['issues'])}; "
+        f"dump_chars={audit['summary']['dump_chars']}; "
+        f"large_keys={len(audit['summary']['large_keys'])}; "
+        f"cleaned_tmp={cleaned_tmp}; "
+        f"last_audit={audit['ts']}"
+    )
+
+
+def maintain_workspace(source: str = "system", cleanup_tmp: bool = True) -> dict[str, Any]:
+    audit = audit_workspace()
+    cleaned: list[str] = []
+    if cleanup_tmp:
+        for path in stale_tmp_files():
+            try:
+                path.unlink()
+                cleaned.append(path.name)
+            except OSError as exc:
+                logger.warning("Could not remove stale temp file %s: %s", path, exc)
+
+    health = workspace_health_text(audit, len(cleaned))
+    ts = now()
+    kv = load_kv()
+    kv["workspace_health"] = {"value": health, "updated_at": ts, "by": source}
+    save_kv(kv)
+
+    if cleaned:
+        append_log(source, "workspace_cleanup", f"removed stale tmp files: {', '.join(cleaned[:5])}")
+    if audit["issues"]:
+        guards = ", ".join(issue["guard"] for issue in audit["issues"][:5])
+        append_log(source, "workspace_maintenance_needed", guards)
+
+    return {"audit": audit, "cleaned_tmp": cleaned, "workspace_health": health}
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -784,6 +963,11 @@ async def list_tools() -> list[Tool]:
         tool("workspace_read", "Read a value from shared workspace memory.", {"key": {"type": "string"}}, ["key"]),
         tool("workspace_list", "List all shared workspace keys.", {}),
         tool("workspace_dump", "Dump all shared workspace values.", {}),
+        tool("workspace_audit", "Analyze workspace hygiene, hot/warm/cold drift, stale plans, and cleanup needs.", {}),
+        tool("workspace_maintain", "Run safe workspace maintenance: audit, stale temp cleanup, and workspace_health update.", {
+            "source": {"type": "string", "default": "system"},
+            "cleanup_tmp": {"type": "boolean", "default": True},
+        }),
         tool("workspace_delete", "Delete a shared workspace key.", {"key": {"type": "string"}}, ["key"]),
         tool("log_activity", "Append an activity entry for handover.", {
             "source": {"type": "string"},
@@ -1003,8 +1187,17 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         kv = load_kv()
         if not kv:
             return text_response("Workspace is empty.")
-        blocks = [f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items()]
-        return text_response("\n\n".join(blocks))
+        return text_response(workspace_dump_text(kv))
+
+    if name == "workspace_audit":
+        return text_response(json.dumps(audit_workspace(), indent=2, ensure_ascii=False))
+
+    if name == "workspace_maintain":
+        result = maintain_workspace(
+            arguments.get("source", "system"),
+            bool(arguments.get("cleanup_tmp", True)),
+        )
+        return text_response(json.dumps(result, indent=2, ensure_ascii=False))
 
     if name == "workspace_delete":
         kv = load_kv()
@@ -1061,14 +1254,13 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if agent not in {"codex", "cowork"}:
             return text_response("agent must be 'codex' or 'cowork'.")
         n = int(arguments.get("n", 10))
+        maintenance = maintain_workspace(agent, True)
         kv = load_kv()
         owner = kv.get("session_owner", {}).get("value", "")
         owner_line = "Owner OK." if owner == agent else f"Owner warning: session_owner is '{owner or 'unset'}', not '{agent}'."
         append_log(agent, "session_start", "takeover from MCP")
 
-        workspace = "Workspace is empty."
-        if kv:
-            workspace = "\n\n".join(f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items())
+        workspace = workspace_dump_text(kv)
 
         activity_entries = load_log()[-n:]
         activity = "No activity logged yet."
@@ -1080,7 +1272,12 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if events:
             file_events = "\n".join(f"[{e['ts']}] {e['type'].upper()}: {e['path']}" for e in reversed(events))
 
-        return text_response(f"{owner_line}\n\n## workspace_dump\n{workspace}\n\n## get_recent_activity {n}\n{activity}\n\n## get_file_events {n}\n{file_events}")
+        maintenance_line = (
+            f"status={maintenance['audit']['status']} "
+            f"issues={len(maintenance['audit']['issues'])} "
+            f"cleaned_tmp={len(maintenance['cleaned_tmp'])}"
+        )
+        return text_response(f"{owner_line}\n\n## workspace_maintenance\n{maintenance_line}\n\n## workspace_dump\n{workspace}\n\n## get_recent_activity {n}\n{activity}\n\n## get_file_events {n}\n{file_events}")
 
     if name == "repo_status":
         root = repo_root(arguments.get("root"))
