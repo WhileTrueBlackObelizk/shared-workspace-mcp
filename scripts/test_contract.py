@@ -37,12 +37,14 @@ def main() -> int:
         "workspace_write",
         "workspace_audit",
         "workspace_maintain",
+        "mcp_doctor",
         "handover_prepare",
         "handover_takeover",
         "repo_status",
         "pipeline_create",
         "token_log",
         "learning_log_error",
+        "learning_context",
         "goal_start",
         "feedback_maybe",
         "verify_file_refs",
@@ -72,6 +74,12 @@ def main() -> int:
     assert not module.local_request_ok("127.0.0.1:8765", "http://evil.com")  # cross-origin browser
     assert not module.local_request_ok("attacker.com:8765", "http://attacker.com")
 
+    check_workspace_hygiene(module)
+    check_process_filter(module)
+    check_active_task_autolog(module)
+    check_learning_context(module)
+    check_mcp_doctor(module)
+
     store = {
         "kv": {},
         "log": [],
@@ -100,6 +108,9 @@ def main() -> int:
     takeover = module._call_tool("handover_takeover", {"agent": "cowork"})[0].text
     assert "Owner OK." in takeover
     assert "## workspace_maintenance" in takeover
+    assert "## mcp_doctor" in takeover
+    assert "## learning_context" in takeover
+    assert "status=ok" in takeover
     assert "## workspace_dump" in takeover
     assert "get_recent_activity" in takeover
     assert "get_file_events" in takeover
@@ -110,6 +121,113 @@ def main() -> int:
 
     print("contract tests OK")
     return 0
+
+
+def check_workspace_hygiene(module) -> None:
+    """Cold project notes stay readable by key, but do not bloat takeover dumps."""
+    long_cold = "cold-" + ("x" * 2000)
+    kv = {
+        "active_task": {"value": "check workspace hygiene", "updated_at": "2026-06-26T12:00:00", "by": "codex"},
+        "project_note": {"value": long_cold, "updated_at": "2026-06-26T12:00:00", "by": "codex"},
+    }
+    dump = module.workspace_dump_text(kv)
+    assert long_cold not in dump
+    assert "truncated cold key" in dump
+    assert "workspace_read key='project_note'" in dump
+
+    module.load_kv = lambda: dict(kv)
+    module.load_log = lambda: []
+    module.load_file_events = lambda: []
+    module.load_pipelines = lambda: {}
+    module.load_goals = lambda: {}
+    module.stale_tmp_files = lambda: []
+
+    audit = module.audit_workspace()
+    assert audit["status"] == "ok", audit
+    assert audit["summary"]["large_keys"] == {}, audit
+    assert audit["summary"]["large_cold_keys"] == {"project_note": len(long_cold)}, audit
+
+    kv["context"] = {"value": "hot-" + ("y" * 1600), "updated_at": "2026-06-26T12:00:00", "by": "codex"}
+    hot_audit = module.audit_workspace()
+    assert hot_audit["status"] == "attention", hot_audit
+    assert any(i["guard"] == "hot_key_guard" for i in hot_audit["issues"]), hot_audit
+
+
+def check_process_filter(module) -> None:
+    assert module.looks_like_server_invocation(r"C:\x\.venv\Scripts\python.exe C:\x\server.py --stdio")
+    assert module.looks_like_server_invocation(r'".venv\Scripts\python.exe"  server.py')
+    assert not module.looks_like_server_invocation(r"python -c \"spec_from_file_location('s', 'server.py')\"")
+    assert not module.looks_like_server_invocation(r"python scripts\test_contract.py")
+
+
+def check_active_task_autolog(module) -> None:
+    store = {"kv": {}, "log": []}
+    module.load_kv = lambda: dict(store["kv"])
+    module.save_kv = lambda data: store.__setitem__("kv", data)
+    module.append_log = lambda source, action, detail="": store["log"].append({"source": source, "action": action, "detail": detail})
+    module._call_tool("workspace_write", {"key": "active_task", "value": "Automate learning context", "source": "codex"})
+    actions = [entry["action"] for entry in store["log"]]
+    assert "write" in actions and "task_start" in actions, actions
+
+
+def check_learning_context(module) -> None:
+    entries = [
+        {
+            "ts": "2026-06-20T10:00:00",
+            "type": "error",
+            "task": "firestore emulator",
+            "error": "Java missing",
+            "cause": "emulator needs java",
+            "fix": "Check java -version before emulator tests.",
+            "lesson": "Check java -version before starting Firestore emulator-based tests.",
+            "severity": "high",
+            "tags": ["firestore", "java", "test"],
+        },
+        {
+            "ts": "2026-06-20T11:00:00",
+            "type": "lesson",
+            "task": "docs",
+            "lesson": "Keep public README badges secret-scan friendly.",
+            "trigger": "readme badges",
+            "tags": ["docs"],
+        },
+    ]
+    module.load_learning = lambda: list(entries)
+    context = module.learning_context_text("run firestore emulator tests", 3)
+    assert "java -version" in context, context
+    assert "README badges" not in context, context
+    automatic = module.learning_context_text("mcp process doctor duplicate registrations", 3, module.LEARNING_AUTO_MIN_SCORE)
+    assert "No relevant lessons" in automatic, automatic
+
+    kv = {"active_task": {"value": "fix firestore emulator tests"}}
+    assert module.relevant_learning_entries(module.workspace_learning_query(kv), 1)
+
+
+def check_mcp_doctor(module) -> None:
+    kv = {
+        "active_task": {"value": "diagnose mcp", "updated_at": "2026-06-26T12:00:00", "by": "codex"},
+    }
+    module.load_kv = lambda: dict(kv)
+    module.load_log = lambda: []
+    module.load_file_events = lambda: []
+    module.load_pipelines = lambda: {}
+    module.load_goals = lambda: {}
+    module.stale_tmp_files = lambda: []
+
+    original_sha = module.RUNTIME_SERVER_SHA
+    module.RUNTIME_SERVER_SHA = "0" * 64
+    drift = module.mcp_doctor(include_processes=False)
+    module.RUNTIME_SERVER_SHA = original_sha
+    assert drift["status"] == "attention", drift
+    assert any(item["id"] == "runtime_file_drift" for item in drift["findings"]), drift
+
+    module.shared_mcp_processes = lambda: {
+        "ok": True,
+        "processes": [],
+        "summary": {"total": 4, "stdio": 3, "sse": 1},
+    }
+    proc = module.mcp_doctor(include_processes=True)
+    assert any(item["id"] == "many_server_processes" for item in proc["findings"]), proc
 
 
 def check_concurrent_json_writes() -> None:

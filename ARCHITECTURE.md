@@ -41,6 +41,12 @@ process-unique temporary JSON file, then replaced atomically. Multiple stdio
 clients can run at the same time without corrupting shared JSON or colliding on
 the same `.tmp` file.
 
+`workspace_dump` is a takeover view, not a full archive export. Core hot keys
+(`session_owner`, task, plan, acceptance criteria, output, next steps, blockers,
+handover notes, and `workspace_health`) are printed in full. Long non-hot keys
+are previewed with a `workspace_read` pointer so project notes remain available
+without bloating every handover.
+
 ## Tool groups
 
 Workspace memory:
@@ -52,6 +58,10 @@ workspace_list
 workspace_dump
 workspace_delete
 ```
+
+`workspace_write key=active_task` also appends a `task_start` activity. The
+write remains explicit, but intake evidence no longer requires a second manual
+log call.
 
 Activity and file events:
 
@@ -66,16 +76,38 @@ Workspace maintenance:
 ```text
 workspace_audit
 workspace_maintain
+mcp_doctor
 ```
 
-`handover_takeover` runs safe maintenance automatically before returning
-context. The maintenance pass:
+`handover_takeover` runs safe maintenance and a lightweight doctor summary
+automatically before returning context. The maintenance pass:
 
 - updates the small `workspace_health` key,
 - removes stale `*.tmp` files older than 10 minutes,
 - logs `workspace_maintenance_needed` when the hot dump is too large,
   one hot key is too long, `current_plan` is stale, or active context and plan
   appear to describe different projects.
+
+Informational cleanup hints, such as old completed pipelines or multiple active
+goals, stay in the audit output but do not by themselves make the health status
+`attention`.
+
+`mcp_doctor` is the diagnostic entry point. It combines the workspace audit with
+a runtime/file hash comparison and an optional fixed process probe for multiple
+`server.py` processes. It is read-only and returns recommended actions such as
+restart, registration cleanup, maintenance, or future hardening options.
+High process counts are informational when they resolve to distinct clients;
+duplicate top-level registrations are the warning signal.
+
+The takeover path calls `mcp_doctor` without the process probe, so every session
+sees runtime/file drift and workspace health without running process
+inspection. Agents call `mcp_doctor` directly when process duplication is part
+of the investigation.
+
+The same takeover path calls the learning relevance pass. It builds a query from
+`active_task` and `current_plan`, then emits a `## learning_context` section.
+This keeps prior mistakes in the default session path instead of relying on the
+agent to remember a manual `learning_search`.
 
 Handover:
 
@@ -119,6 +151,7 @@ Learning:
 learning_log_error
 learning_log_lesson
 learning_search
+learning_context
 learning_recent
 ```
 
@@ -159,6 +192,9 @@ HTTP routes:
 /feedback
 /health
 ```
+
+`/health` stays lightweight: it reports storage, runtime drift, workspace
+status, and doctor findings without running the process probe.
 
 ## Security boundaries
 
@@ -243,7 +279,8 @@ The MCP does not "learn" by changing model weights. It learns operationally:
 
 1. Record errors with `learning_log_error`.
 2. Record reusable lessons with `learning_log_lesson`.
-3. Search prior lessons before similar work with `learning_search`.
+3. Search prior lessons before similar work with `learning_search`, or let
+   `handover_takeover` surface them automatically through `learning_context`.
 4. Keep goal state in `goals.json` so agents can orient around outcomes, not
    just steps.
 5. Ask for occasional user feedback with `feedback_maybe`; the returned local

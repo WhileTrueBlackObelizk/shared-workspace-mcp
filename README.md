@@ -98,7 +98,10 @@ The hot workspace should stay small:
 
 ```text
 active_task
+session_owner
 context
+current_plan
+acceptance_criteria
 last_output
 next_steps
 blockers
@@ -106,8 +109,9 @@ handover_notes
 workspace_health
 ```
 
-Long project notes belong in project files, docs, or namespaced project keys;
-the hot `workspace_dump` is for the next action, not for full history.
+Long project notes belong in project files, docs, or namespaced project keys.
+`workspace_dump` prints hot keys in full, previews long cold keys, and points to
+`workspace_read` for the full value.
 
 </details>
 
@@ -122,8 +126,10 @@ Compact state outside the prompt, pulled only when it matters:
 workspace_dump
 workspace_audit
 workspace_maintain
+mcp_doctor
 get_recent_activity n=10
 learning_search query="similar failure"
+learning_context query="current task"
 gate_check step=test root="C:\path\to\repo" source=cowork
 gate_advance pipeline_id=my-task root="C:\path\to\repo" source=cowork
 drift_report pipeline_id=my-task
@@ -140,9 +146,9 @@ Advance with `gate_advance` (not manual edits); a blocked gate writes a lesson.
 
 <br/>
 
-`handover_takeover` runs safe maintenance before it returns context. It does not
-delete project knowledge. It only removes stale temporary JSON files and writes a
-small `workspace_health` key.
+`handover_takeover` runs safe maintenance and a lightweight doctor summary
+before it returns context. It does not delete project knowledge. It only removes
+stale temporary JSON files and writes a small `workspace_health` key.
 
 It reports attention when:
 
@@ -159,6 +165,22 @@ more than one goal is active
 Use `workspace_audit` to inspect the full report and `workspace_maintain` to run
 the same safe cleanup manually.
 
+Use `mcp_doctor` when investigating runtime or process issues. It checks
+runtime/file drift, workspace hygiene, and duplicate `server.py` registrations,
+then returns recommended next actions.
+Many observed server processes are reported as an informational hint when they
+map to distinct clients; duplicate registrations remain the warning condition.
+
+Takeovers include the lightweight doctor summary automatically. Call `mcp_doctor`
+directly when you also need the process probe.
+
+Takeovers also include `learning_context`, an automatic relevance pass over
+stored lessons using the active task and current plan. Agents still can call
+`learning_search`, but routine starts do not depend on remembering to ask.
+
+Writing `active_task` also records a `task_start` activity automatically, so the
+intake gate does not depend on a second manual log call.
+
 </details>
 
 <details>
@@ -169,13 +191,13 @@ the same safe cleanup manually.
 | Area | Tools |
 | --- | --- |
 | Memory | `workspace_write` · `workspace_read` · `workspace_dump` · `workspace_list` · `workspace_delete` |
-| Maintenance | `workspace_audit` · `workspace_maintain` |
+| Maintenance | `workspace_audit` · `workspace_maintain` · `mcp_doctor` |
 | Activity / files | `log_activity` · `get_recent_activity` · `get_file_events` |
 | Handover | `handover_prepare` · `handover_takeover` |
 | Code workspace | `repo_status` · `git_diff` · `search_code` · `read_file` · `run_check` (`ruff`/`mypy` too) |
 | Gates | `gate_policy` · `gate_check` · `gate_status` · `gate_advance` · `verify_file_refs` · `drift_report` |
 | Goals / pipelines | `goal_start` · `goal_update` · `goal_status` · `goal_complete` · `pipeline_create` · `pipeline_next` · `pipeline_status` · `pipeline_update_step` · `pipeline_finish` |
-| Learning | `learning_log_error` · `learning_log_lesson` · `learning_search` · `learning_recent` |
+| Learning | `learning_log_error` · `learning_log_lesson` · `learning_search` · `learning_context` · `learning_recent` |
 | Tokens / feedback | `token_log` · `token_summary` · `estimate_tokens` · `context_snapshot` · `feedback_maybe` · `feedback_log` · `feedback_summary` |
 
 </details>

@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import hashlib
 import subprocess
 import sys
 import threading
@@ -54,6 +55,8 @@ CHECK_RUNS_FILE = STORAGE_DIR / "check_runs.json"
 GATE_RESULTS_FILE = STORAGE_DIR / "gate_results.json"
 EVIDENCE_FILE = STORAGE_DIR / "evidence.json"
 WATCH_PATH = HOME / "Claude" / "Projects" / "Skills"
+SERVER_PATH = Path(__file__).resolve()
+RUNTIME_SERVER_SHA = hashlib.sha256(SERVER_PATH.read_bytes()).hexdigest() if SERVER_PATH.exists() else ""
 MAX_LOG = 500
 MAX_FILE_EVENTS = 200
 MAX_TOKEN_LOG = 1000
@@ -64,6 +67,22 @@ MAX_GATE_RESULTS = 1000
 MAX_EVIDENCE = 1000
 HOT_DUMP_WARN_CHARS = 8000
 HOT_KEY_WARN_CHARS = 1500
+JSON_REPLACE_RETRIES = 6
+HOT_KEYS = {
+    "session_owner",
+    "active_task",
+    "context",
+    "last_output",
+    "next_steps",
+    "blockers",
+    "handover_notes",
+    "workspace_health",
+    "current_plan",
+    "acceptance_criteria",
+}
+COLD_DUMP_PREVIEW_CHARS = 400
+LEARNING_CONTEXT_DEFAULT = 5
+LEARNING_AUTO_MIN_SCORE = 20
 STALE_PLAN_HOURS = 24
 STALE_TMP_MINUTES = 10
 DEFAULT_PIPELINE_STEPS = ["intake", "plan", "implement", "test", "review", "handover"]
@@ -86,6 +105,7 @@ GATE_POLICY = {
         "[hard] session_owner exists",
         "[hard] active_task exists and is not '-'",
         "[hard] recent task_start or session_start activity exists",
+        "[advisory] relevant prior lessons are available",
     ],
     "plan": [
         "[hard] current_plan has content (>=20 chars)",
@@ -179,7 +199,15 @@ def _write_json_unlocked(path: Path, data: Any) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        for attempt in range(JSON_REPLACE_RETRIES):
+            try:
+                tmp.replace(path)
+                break
+            except OSError as exc:
+                transient_windows_error = os.name == "nt" and getattr(exc, "winerror", None) in {5, 32}
+                if not transient_windows_error or attempt == JSON_REPLACE_RETRIES - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
@@ -322,10 +350,29 @@ def parse_ts(value: str) -> datetime | None:
         return None
 
 
+def is_hot_key(key: str) -> bool:
+    return key in HOT_KEYS
+
+
+def dump_value(key: str, value: Any) -> str:
+    text = str(value)
+    if is_hot_key(key) or len(text) <= COLD_DUMP_PREVIEW_CHARS:
+        return text
+    preview = text[:COLD_DUMP_PREVIEW_CHARS].rstrip()
+    return (
+        f"{preview}\n"
+        f"[truncated cold key: {len(text)} chars total; "
+        f"use workspace_read key={key!r} for full value]"
+    )
+
+
 def workspace_dump_text(kv: dict[str, Any]) -> str:
     if not kv:
         return "Workspace is empty."
-    return "\n\n".join(f"### {k}\n{v['value']}\n[by: {v['by']} @ {v['updated_at']}]" for k, v in kv.items())
+    return "\n\n".join(
+        f"### {k}\n{dump_value(k, v['value'])}\n[by: {v['by']} @ {v['updated_at']}]"
+        for k, v in kv.items()
+    )
 
 
 def project_mentions(text: str) -> set[str]:
@@ -356,7 +403,14 @@ def audit_workspace() -> dict[str, Any]:
         })
         actions.append("Move long project notes to project:* keys or source files; keep HOT keys short.")
 
-    large_keys = {key: size for key, size in key_sizes.items() if size > HOT_KEY_WARN_CHARS}
+    large_keys = {
+        key: size for key, size in key_sizes.items()
+        if is_hot_key(key) and size > HOT_KEY_WARN_CHARS
+    }
+    large_cold_keys = {
+        key: size for key, size in key_sizes.items()
+        if not is_hot_key(key) and size > HOT_KEY_WARN_CHARS
+    }
     if large_keys:
         issues.append({
             "guard": "hot_key_guard",
@@ -429,6 +483,7 @@ def audit_workspace() -> dict[str, Any]:
             "kv_keys": len(kv),
             "dump_chars": len(dump),
             "large_keys": large_keys,
+            "large_cold_keys": large_cold_keys,
             "active_projects": sorted(active_projects),
             "plan_projects": sorted(plan_projects),
             "activity_entries": len(load_log()),
@@ -440,7 +495,7 @@ def audit_workspace() -> dict[str, Any]:
         },
         "issues": issues,
         "recommended_actions": list(dict.fromkeys(actions)),
-        "status": "attention" if issues else "ok",
+        "status": "attention" if any(i["severity"] != "info" for i in issues) else "ok",
     }
 
 
@@ -488,6 +543,183 @@ def maintain_workspace(source: str = "system", cleanup_tmp: bool = True) -> dict
         append_log(source, "workspace_maintenance_needed", guards)
 
     return {"audit": audit, "cleaned_tmp": cleaned, "workspace_health": health}
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def runtime_report() -> dict[str, Any]:
+    current_sha = file_sha256(SERVER_PATH) if SERVER_PATH.exists() else ""
+    return {
+        "server_path": str(SERVER_PATH),
+        "runtime_sha": RUNTIME_SERVER_SHA,
+        "file_sha": current_sha,
+        "drift": bool(RUNTIME_SERVER_SHA and current_sha and RUNTIME_SERVER_SHA != current_sha),
+    }
+
+
+def process_rows_windows() -> list[dict[str, Any]]:
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        (
+            "Get-CimInstance Win32_Process "
+            "-Filter \"Name='python.exe'\" | "
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
+            "ConvertTo-Json -Compress"
+        ),
+    ]
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=10,
+        shell=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "process query failed").strip())
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return []
+    data = json.loads(raw)
+    return data if isinstance(data, list) else [data]
+
+
+def process_rows_posix() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return rows
+    for child in proc_root.iterdir():
+        if not child.name.isdigit():
+            continue
+        try:
+            cmdline = child.joinpath("cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+            stat = child.joinpath("stat").read_text(encoding="utf-8", errors="replace").split()
+            parent = int(stat[3]) if len(stat) > 3 else 0
+        except OSError:
+            continue
+        rows.append({"ProcessId": int(child.name), "ParentProcessId": parent, "Name": Path(cmdline.split(" ")[0]).name, "CommandLine": cmdline})
+    return rows
+
+
+def looks_like_server_invocation(command: str) -> bool:
+    return bool(re.search(r'(?i)(?:^|\s)(?:"[^"]*server\.py"|[^\s"\']*server\.py)(?=\s|$)', command))
+
+
+def shared_mcp_processes() -> dict[str, Any]:
+    try:
+        rows = process_rows_windows() if os.name == "nt" else process_rows_posix()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "processes": [], "summary": {}}
+
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        command = str(row.get("CommandLine") or "")
+        lowered = command.lower()
+        if not looks_like_server_invocation(command):
+            continue
+        transport = "stdio" if "--stdio" in lowered else "sse"
+        matches.append({
+            "pid": row.get("ProcessId"),
+            "ppid": row.get("ParentProcessId"),
+            "name": row.get("Name"),
+            "transport": transport,
+            "command": clipped(command, 500),
+        })
+
+    match_pids = {item["pid"] for item in matches}
+    top_level = [item for item in matches if item["ppid"] not in match_pids]
+    client_ppids = {item["ppid"] for item in top_level}
+    summary = {
+        "total": len(matches),
+        "stdio": sum(1 for item in matches if item["transport"] == "stdio"),
+        "sse": sum(1 for item in matches if item["transport"] == "sse"),
+        "registrations": len(top_level),
+        "clients": len(client_ppids),
+        "duplicates": len(top_level) - len(client_ppids),
+    }
+    return {"ok": True, "processes": matches, "summary": summary}
+
+
+def mcp_doctor(include_processes: bool = True) -> dict[str, Any]:
+    audit = audit_workspace()
+    runtime = runtime_report()
+    findings: list[dict[str, str]] = []
+    recommendations: list[dict[str, str]] = []
+
+    def finding(severity: str, item_id: str, detail: str) -> None:
+        findings.append({"severity": severity, "id": item_id, "detail": detail})
+
+    def recommend(kind: str, item_id: str, action: str) -> None:
+        recommendations.append({"kind": kind, "id": item_id, "action": action})
+
+    if runtime["drift"]:
+        finding("warn", "runtime_file_drift", "Loaded server.py differs from the file on disk; restart MCP clients to load the current code.")
+        recommend("conventional", "restart_runtime", "Restart Claude/Codex/MCP clients after editing server.py.")
+        recommend("future", "gate_quarantine", "Future hard gates could refuse certification while runtime/file drift is true.")
+
+    if audit["status"] != "ok":
+        guards = ", ".join(issue["guard"] for issue in audit["issues"])
+        finding("warn", "workspace_health", f"Workspace audit status is {audit['status']}: {guards}.")
+        recommend("conventional", "workspace_maintain", "Run workspace_maintain and compact or move large hot keys.")
+    elif audit["issues"]:
+        guards = ", ".join(issue["guard"] for issue in audit["issues"])
+        finding("info", "workspace_hints", f"Workspace has non-blocking hints: {guards}.")
+
+    process_report = {"ok": True, "processes": [], "summary": {}}
+    if include_processes:
+        process_report = shared_mcp_processes()
+        if not process_report["ok"]:
+            finding("info", "process_probe_failed", f"Process probe failed: {process_report['error']}")
+        else:
+            summary = process_report["summary"]
+            if summary.get("duplicates", 0) > 0:
+                finding(
+                    "warn",
+                    "duplicate_server_registrations",
+                    f"{summary.get('duplicates', 0)} duplicate shared-mcp registration(s); {summary.get('registrations', 0)} registrations across {summary.get('clients', 0)} client(s), {summary.get('total', 0)} processes incl. workers.",
+                )
+                recommend("conventional", "dedupe_stdio", "Keep one stdio registration per client surface; remove duplicate Claude/Codex registrations.")
+                recommend("future", "single_supervisor", "Run one SSE supervisor and make stdio clients proxy to it instead of spawning independent servers.")
+            elif summary.get("total", 0) >= 4:
+                finding(
+                    "info",
+                    "many_server_processes",
+                    f"{summary.get('total', 0)} shared-mcp processes observed; {summary.get('registrations', 0)} top-level registration(s), {summary.get('clients', 0)} client(s).",
+                )
+
+    if not STORAGE_DIR.exists():
+        finding("warn", "storage_missing", f"Storage directory does not exist: {STORAGE_DIR}")
+        recommend("conventional", "create_storage", "Run workspace_maintain once to create and audit storage.")
+
+    status = "attention" if any(item["severity"] == "warn" for item in findings) else "ok"
+    return {
+        "ts": now(),
+        "status": status,
+        "runtime": runtime,
+        "workspace": {
+            "status": audit["status"],
+            "issues": audit["issues"],
+            "summary": audit["summary"],
+        },
+        "processes": process_report,
+        "findings": findings,
+        "recommendations": recommendations,
+    }
+
+
+def doctor_summary_text(diagnosis: dict[str, Any]) -> str:
+    lines = [f"status={diagnosis['status']} findings={len(diagnosis['findings'])}"]
+    for item in diagnosis["findings"][:5]:
+        lines.append(f"- {item['severity']} {item['id']}: {item['detail']}")
+    for item in diagnosis["recommendations"][:3]:
+        lines.append(f"- {item['kind']} {item['id']}: {item['action']}")
+    return "\n".join(lines)
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -621,6 +853,62 @@ def append_learning(entry: dict[str, Any]) -> dict[str, Any]:
     _update_json(LEARNING_FILE, [], update)
     append_log(entry.get("source", "unknown"), f"learning_{entry.get('type', 'note')}", entry.get("lesson") or entry.get("error", ""))
     return entry
+
+
+def learning_entry_text(entry: dict[str, Any]) -> str:
+    parts = [
+        entry.get("task", ""),
+        entry.get("error", ""),
+        entry.get("cause", ""),
+        entry.get("fix", ""),
+        entry.get("lesson", ""),
+        entry.get("trigger", ""),
+        " ".join(str(tag) for tag in entry.get("tags", [])),
+    ]
+    return " ".join(str(part) for part in parts if part)
+
+
+def learning_tokens(text: str) -> set[str]:
+    words = re.findall(r"[a-zA-Z0-9_-]{4,}", text.lower())
+    return {word for word in words if word not in {"with", "from", "that", "this", "have", "when", "then"}}
+
+
+def relevant_learning_entries(query: str, limit: int = LEARNING_CONTEXT_DEFAULT, min_score: int = 1) -> list[dict[str, Any]]:
+    tokens = learning_tokens(query)
+    if not tokens:
+        return []
+    scored: list[tuple[int, str, dict[str, Any]]] = []
+    for entry in load_learning():
+        haystack = learning_entry_text(entry)
+        overlap = tokens & learning_tokens(haystack)
+        if not overlap:
+            continue
+        severity_bonus = 2 if entry.get("severity") == "high" else 0
+        score = (len(overlap) * 10) + severity_bonus
+        if score < min_score:
+            continue
+        scored.append((score, entry.get("ts", ""), entry))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [entry for _, _, entry in reversed(scored[-limit:])]
+
+
+def learning_context_text(query: str, limit: int = LEARNING_CONTEXT_DEFAULT, min_score: int = 1) -> str:
+    entries = relevant_learning_entries(query, limit, min_score)
+    if not entries:
+        return "No relevant lessons found."
+    lines = []
+    for entry in entries:
+        label = entry.get("lesson") or entry.get("fix") or entry.get("error", "")
+        tags = ", ".join(str(tag) for tag in entry.get("tags", []))
+        meta = f"{entry.get('type', 'lesson')} {entry.get('task', '')}".strip()
+        suffix = f" [{tags}]" if tags else ""
+        lines.append(f"[{entry['ts']}] {meta}: {label}{suffix}")
+    return "\n".join(lines)
+
+
+def workspace_learning_query(kv: dict[str, Any]) -> str:
+    keys = ["active_task", "current_plan"]
+    return "\n".join(str(kv.get(key, {}).get("value", "")) for key in keys)
 
 
 def record_feedback(prompt_id: str, rating: str, note: str = "", source: str = "user") -> dict[str, Any]:
@@ -766,6 +1054,7 @@ def gate_checks(step: str, root: Path, actor: str = "") -> list[dict[str, Any]]:
         active = kv.get("active_task", {}).get("value", "")
         add("active_task", bool(active and active != "-"), "active_task exists and is not '-'")
         add("session_activity", bool(actions & {"task_start", "session_start"}), "task_start/session_start activity exists")
+        add("learning_context", bool(relevant_learning_entries(workspace_learning_query(kv), 1)), "relevant prior lessons are available", "advisory")
     elif step == "plan":
         plan = kv.get("current_plan", {}).get("value", "")
         add("current_plan", len(plan.strip()) >= 20, "current_plan has content (>=20 chars)")
@@ -968,6 +1257,10 @@ async def list_tools() -> list[Tool]:
             "source": {"type": "string", "default": "system"},
             "cleanup_tmp": {"type": "boolean", "default": True},
         }),
+        tool("mcp_doctor", "Diagnose MCP runtime drift, process duplication, and workspace hygiene.", {
+            "source": {"type": "string", "default": "unknown"},
+            "include_processes": {"type": "boolean", "default": True},
+        }),
         tool("workspace_delete", "Delete a shared workspace key.", {"key": {"type": "string"}}, ["key"]),
         tool("log_activity", "Append an activity entry for handover.", {
             "source": {"type": "string"},
@@ -1077,6 +1370,10 @@ async def list_tools() -> list[Tool]:
             "query": {"type": "string"},
             "n": {"type": "integer", "default": 10},
         }, ["query"]),
+        tool("learning_context", "Automatically surface relevant prior lessons for a task/context.", {
+            "query": {"type": "string", "default": ""},
+            "n": {"type": "integer", "default": LEARNING_CONTEXT_DEFAULT},
+        }),
         tool("learning_recent", "Read recent lessons/errors.", {"n": {"type": "integer", "default": 10}}),
         tool("goal_start", "Start a goal with success criteria and optional pipeline link.", {
             "objective": {"type": "string"},
@@ -1167,6 +1464,8 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         kv[key] = {"value": value, "updated_at": now(), "by": source}
         save_kv(kv)
         append_log(source, "write", f"{key} = {value[:80]}")
+        if key == "active_task" and value.strip() and value.strip() != "-":
+            append_log(source, "task_start", value[:160])
         return text_response(f"OK: '{key}' saved.")
 
     if name == "workspace_read":
@@ -1197,6 +1496,12 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             arguments.get("source", "system"),
             bool(arguments.get("cleanup_tmp", True)),
         )
+        return text_response(json.dumps(result, indent=2, ensure_ascii=False))
+
+    if name == "mcp_doctor":
+        source = arguments.get("source", "unknown")
+        result = mcp_doctor(bool(arguments.get("include_processes", True)))
+        append_log(source, "mcp_doctor", f"status={result['status']} findings={len(result['findings'])}")
         return text_response(json.dumps(result, indent=2, ensure_ascii=False))
 
     if name == "workspace_delete":
@@ -1255,12 +1560,14 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return text_response("agent must be 'codex' or 'cowork'.")
         n = int(arguments.get("n", 10))
         maintenance = maintain_workspace(agent, True)
+        diagnosis = mcp_doctor(include_processes=False)
         kv = load_kv()
         owner = kv.get("session_owner", {}).get("value", "")
         owner_line = "Owner OK." if owner == agent else f"Owner warning: session_owner is '{owner or 'unset'}', not '{agent}'."
         append_log(agent, "session_start", "takeover from MCP")
 
         workspace = workspace_dump_text(kv)
+        learning = learning_context_text(workspace_learning_query(kv), LEARNING_CONTEXT_DEFAULT, LEARNING_AUTO_MIN_SCORE)
 
         activity_entries = load_log()[-n:]
         activity = "No activity logged yet."
@@ -1277,7 +1584,8 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             f"issues={len(maintenance['audit']['issues'])} "
             f"cleaned_tmp={len(maintenance['cleaned_tmp'])}"
         )
-        return text_response(f"{owner_line}\n\n## workspace_maintenance\n{maintenance_line}\n\n## workspace_dump\n{workspace}\n\n## get_recent_activity {n}\n{activity}\n\n## get_file_events {n}\n{file_events}")
+        doctor = doctor_summary_text(diagnosis)
+        return text_response(f"{owner_line}\n\n## workspace_maintenance\n{maintenance_line}\n\n## mcp_doctor\n{doctor}\n\n## learning_context\n{learning}\n\n## workspace_dump\n{workspace}\n\n## get_recent_activity {n}\n{activity}\n\n## get_file_events {n}\n{file_events}")
 
     if name == "repo_status":
         root = repo_root(arguments.get("root"))
@@ -1505,17 +1813,19 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     if name == "learning_search":
         query = arguments["query"].lower()
-        entries = [
-            e for e in load_learning()
-            if query in json.dumps(e, ensure_ascii=False).lower()
-        ][-int(arguments.get("n", 10)):]
+        entries = relevant_learning_entries(query, int(arguments.get("n", 10)))
         if not entries:
             return text_response("No matching lessons.")
         lines = []
-        for entry in reversed(entries):
+        for entry in entries:
             label = entry.get("lesson") or entry.get("error", "")
             lines.append(f"[{entry['ts']}] {entry.get('type')} {entry.get('task', '')}: {label}")
         return text_response("\n".join(lines))
+
+    if name == "learning_context":
+        kv = load_kv()
+        query = arguments.get("query", "") or workspace_learning_query(kv)
+        return text_response(learning_context_text(query, int(arguments.get("n", LEARNING_CONTEXT_DEFAULT))))
 
     if name == "learning_recent":
         entries = load_learning()[-int(arguments.get("n", 10)):]
@@ -1784,6 +2094,8 @@ def run_self_check() -> None:
     refs = verify_refs("server.py:1-5", Path(__file__).resolve().parent)
     assert refs["passed"]
     assert refs["source"] == "unknown"
+    diagnosis = mcp_doctor(include_processes=False)
+    assert "runtime" in diagnosis and "workspace" in diagnosis
     goal = make_goal("Reach the target", "self", "done means done")
     assert goal["status"] == "active"
     lesson = {"type": "lesson", "source": "self", "lesson": "Keep checks close to behavior."}
@@ -1878,10 +2190,18 @@ async def handle_feedback(request):
 
 
 async def handle_health(request):
-    ok = STORAGE_DIR.exists()
+    diagnosis = mcp_doctor(include_processes=False)
+    ok = STORAGE_DIR.exists() and diagnosis["status"] == "ok"
     return JSONResponse(
-        {"status": "ok" if ok else "degraded", "storage": str(STORAGE_DIR), "ts": now()},
-        status_code=200 if ok else 503,
+        {
+            "status": "ok" if ok else "attention",
+            "storage": str(STORAGE_DIR),
+            "runtime_drift": diagnosis["runtime"]["drift"],
+            "workspace_status": diagnosis["workspace"]["status"],
+            "findings": diagnosis["findings"],
+            "ts": now(),
+        },
+        status_code=200 if STORAGE_DIR.exists() else 503,
     )
 
 

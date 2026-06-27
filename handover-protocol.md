@@ -10,11 +10,24 @@ Workspace MCP. Keep it short, explicit, and machine-readable.
 Run these first:
 
 ```text
+handover_takeover agent=[cowork|codex] n=10
+workspace_write key=session_owner value=[cowork|codex] source=[cowork|codex]
+log_activity source=[cowork|codex] action=session_start detail=[short intent]
+```
+
+`handover_takeover` includes safe maintenance, a lightweight `mcp_doctor` summary,
+automatic `learning_context`, the workspace dump, recent activity, and file
+events. Fall back to the older manual reads only if the handover tool is
+unavailable:
+
+Writing `active_task` records `task_start` automatically; use manual
+`log_activity action=task_start` only when the task was started without updating
+`active_task`.
+
+```text
 workspace_dump
 get_recent_activity n=10
 get_file_events n=10
-workspace_write key=session_owner value=[cowork|codex] source=[cowork|codex]
-log_activity source=[cowork|codex] action=session_start detail=[short intent]
 ```
 
 Then decide whether to continue existing work or start a new task.
@@ -165,7 +178,11 @@ When something fails, log the reusable lesson:
 ```text
 learning_log_error task=[task] error=[what failed] cause=[why] fix=[what fixed it] lesson=[reuse next time]
 learning_search query=[similar problem]
+learning_context query=[current task]
 ```
+
+Routine takeover already surfaces `learning_context`; call it manually only when
+the task changes substantially mid-session.
 
 Occasionally ask for feedback, especially after handovers or confusing work:
 
@@ -240,7 +257,7 @@ pipeline_finish pipeline_id=[id] note=[summary]
 
 ## 11. Before pushing repo changes
 
-Run the cheap checks:
+Run the lightweight checks:
 
 ```text
 python scripts/check_secrets.py
