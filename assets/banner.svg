@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-label="Cairn">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-label="Shared Workspace MCP">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0b1220"/>
@@ -36,7 +36,7 @@
   <rect width="1200" height="300" rx="26" fill="url(#bg)"/>
   <ellipse class="halo" cx="205" cy="170" rx="170" ry="150" fill="url(#halo)"/>
 
-  <!-- cairn: stacked stones -->
+  <!-- stacked stones -->
   <g class="cairn">
     <ellipse class="stone st4" cx="205" cy="234" rx="74" ry="26" fill="#334155"/>
     <ellipse class="stone st3" cx="205" cy="190" rx="58" ry="22" fill="#3f4f68"/>
@@ -45,8 +45,8 @@
   </g>
 
   <!-- wordmark -->
-  <text class="eyebrow" x="372" y="92" font-size="22" letter-spacing="6" fill="#5eead4" font-weight="600">SHARED WORKSPACE · MCP</text>
-  <text class="title" x="370" y="176" font-size="104" font-weight="800" fill="url(#ink)">Cairn</text>
+  <text class="eyebrow" x="372" y="92" font-size="22" letter-spacing="6" fill="#5eead4" font-weight="600">MODEL CONTEXT PROTOCOL SERVER</text>
+  <text class="title" x="370" y="176" font-size="72" font-weight="800" fill="url(#ink)">Shared Workspace</text>
   <line class="rule" x1="374" y1="196" x2="734" y2="196" stroke="#34d399" stroke-width="3" stroke-linecap="round"/>
   <text class="tag" x="374" y="240" font-size="27" fill="#94a3b8" font-weight="500">Shared memory &amp; verified handover for AI agents.</text>
 </svg>

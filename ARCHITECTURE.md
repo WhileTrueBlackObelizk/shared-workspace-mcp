@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/banner.svg" alt="Cairn" width="100%"></p>
+<p align="center"><img src="assets/banner.svg" alt="Shared Workspace MCP" width="100%"></p>
 
 # Architecture
 
-Shared Workspace MCP (unofficially *Cairn*) is a small local MCP server for agent
+Shared Workspace MCP is a small local MCP server for agent
 handover and code workspace coordination.
 
 ## Runtime

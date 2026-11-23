@@ -1,20 +1,17 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="Cairn" width="100%" />
+<img src="assets/banner.svg" alt="Shared Workspace MCP" width="100%" />
 
 <p>
   <a href="https://github.com/WhileTrueBlackObelizk/shared-workspace-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/WhileTrueBlackObelizk/shared-workspace-mcp/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="Protocol" src="https://img.shields.io/badge/protocol-MCP-5eead4">
   <img alt="Dependencies" src="https://img.shields.io/badge/deps-stdlib--first-34d399">
-  <img alt="Cost" src="https://img.shields.io/badge/cost-%240-success">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
 
 <b>Shared memory &amp; verified handover for AI agents.</b><br/>
 <sub>Codex and Cowork pass work back and forth without losing the thread — and can't fake "done".</sub>
-
-<sub><i>“Cairn” is the unofficial name for the <b>Shared Workspace MCP</b> (<code>shared-workspace-mcp</code>).</i></sub>
 
 </div>
 
@@ -25,10 +22,6 @@
 <div align="center"><img src="assets/pipeline.svg" alt="intake → plan → implement → test → review → handover" width="100%" /></div>
 
 <div align="center"><sub>A step is <b>done</b> only when its evidence is <b>fresh, independent, and pre-registered</b> — not because the agent says so.</sub></div>
-
-### 🏆 Earn the level
-
-<div align="center"><img src="assets/levels.svg" alt="evidence → score → level" width="100%" /></div>
 
 ---
 
@@ -133,7 +126,7 @@ learning_context query="current task"
 gate_check step=test root="C:\path\to\repo" source=cowork
 gate_advance pipeline_id=my-task root="C:\path\to\repo" source=cowork
 drift_report pipeline_id=my-task
-goal_complete goal_id=my-task        # self-scores + levels up
+goal_complete goal_id=my-task        # records an evidence-based quality score
 ```
 
 Default pipeline: `intake → plan → implement → test → review → handover`.

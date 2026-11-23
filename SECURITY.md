@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/banner.svg" alt="Cairn" width="100%"></p>
+<p align="center"><img src="assets/banner.svg" alt="Shared Workspace MCP" width="100%"></p>
 
 # Security Policy
 
